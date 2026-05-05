@@ -1,17 +1,18 @@
-import React from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
 import { X } from 'lucide-react-native';
+import React from 'react';
+import { Dimensions, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS, LAYOUT } from '../../constants/theme';
 import { Flashcard } from '../../types';
-import { Badge } from '../ui/Badge';
 
 interface WordDetailModalProps {
   word: Flashcard | null;
   visible: boolean;
   onClose: () => void;
+  onEdit?: (word: Flashcard) => void;
+  onDelete?: (word: Flashcard) => void;
 }
 
-export const WordDetailModal: React.FC<WordDetailModalProps> = ({ word, visible, onClose }) => {
+export const WordDetailModal: React.FC<WordDetailModalProps> = ({ word, visible, onClose, onEdit, onDelete }) => {
   if (!word) return null;
 
   return (
@@ -75,6 +76,20 @@ export const WordDetailModal: React.FC<WordDetailModalProps> = ({ word, visible,
                 <Text style={styles.exampleVi}>{word.example_vi}</Text>
               </View>
             </View>
+
+            <TouchableOpacity 
+              style={styles.editBtn}
+              onPress={() => word && onEdit?.(word)}
+            >
+              <Text style={styles.editBtnText}>Edit Card</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.deleteBtn}
+              onPress={() => word && onDelete?.(word)}
+            >
+              <Text style={styles.deleteBtnText}>Delete Card</Text>
+            </TouchableOpacity>
           </ScrollView>
         </View>
       </View>
@@ -99,13 +114,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 24,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   headerTitle: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 24,
+    fontSize: 20,
     color: COLORS.textPrimary,
   },
   closeBtn: {
@@ -125,13 +141,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   englishBox: {
-    backgroundColor: '#111827', // Dark navy as in image
-    padding: 24,
+    backgroundColor: '#1E293B',
+    padding: 20,
     borderRadius: LAYOUT.radiusMedium,
   },
   englishText: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 28,
+    fontSize: 24,
     color: 'white',
   },
   row: {
@@ -139,64 +155,92 @@ const styles = StyleSheet.create({
   },
   subBox: {
     backgroundColor: COLORS.primaryLight,
-    padding: 16,
+    padding: 14,
     borderRadius: LAYOUT.radiusMedium,
-    minHeight: 100,
+    minHeight: 80,
     justifyContent: 'center',
   },
   phoneticText: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 18,
+    fontSize: 16,
     color: COLORS.primary,
   },
   typeText: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 18,
+    fontSize: 16,
     color: COLORS.textPrimary,
   },
   meaningBox: {
     backgroundColor: 'white',
-    padding: 20,
+    padding: 16,
     borderRadius: LAYOUT.radiusMedium,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   meaningText: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 22,
+    fontSize: 20,
     color: COLORS.textPrimary,
   },
   notesBox: {
     backgroundColor: '#FFF9F0',
-    padding: 20,
+    padding: 16,
     borderRadius: LAYOUT.radiusMedium,
     borderWidth: 1,
     borderColor: '#FFECC2',
   },
   notesText: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.textSecondary,
-    lineHeight: 24,
+    lineHeight: 22,
   },
   exampleBox: {
     backgroundColor: COLORS.background,
-    padding: 20,
+    padding: 16,
     borderRadius: LAYOUT.radiusMedium,
   },
   exampleEn: {
     fontFamily: 'Outfit_600SemiBold',
-    fontSize: 18,
+    fontSize: 16,
     color: COLORS.textPrimary,
   },
   divider: {
     height: 1,
     backgroundColor: COLORS.border,
-    marginVertical: 12,
+    marginVertical: 10,
   },
   exampleVi: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.textSecondary,
+  },
+  editBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: LAYOUT.radiusSmall,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 12,
+    ...LAYOUT.shadow,
+  },
+  editBtnText: {
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+    color: 'white',
+  },
+  deleteBtn: {
+    backgroundColor: 'white',
+    borderRadius: LAYOUT.radiusSmall,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: '#FF5252',
+  },
+  deleteBtnText: {
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+    color: '#FF5252',
   },
 });

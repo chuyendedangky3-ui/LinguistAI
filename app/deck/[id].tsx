@@ -1,57 +1,320 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, FlatList } from 'react-native';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import {
+  Brain,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Edit2,
+  Eye, EyeOff,
+  Move,
+  Play,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+  X
+} from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, Edit3, Trash2, Search, Eye, Plus, Brain } from 'lucide-react-native';
-import { COLORS, LAYOUT } from '../../constants/theme';
-import { useFlashcardStore } from '../../store/useFlashcardStore';
-import { Card } from '../../components/ui/Card';
-import { Badge } from '../../components/ui/Badge';
 import { WordDetailModal } from '../../components/flashcard/WordDetailModal';
+import { COLORS, LAYOUT } from '../../constants/theme';
+import { getAge, getTargetReps } from '../../lib/algorithm';
+import { reanalyzeCard } from '../../lib/gemini';
+import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { Flashcard } from '../../types';
 
 export default function DeckDetailScreen() {
-  const { id } = useLocalSearchParams();
+  const { id, editId } = useLocalSearchParams<{ id: string, editId?: string }>();
   const router = useRouter();
-  const { decks, flashcards, removeFlashcard } = useFlashcardStore();
-  
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedWord, setSelectedWord] = useState<Flashcard | null>(null);
-  const [modalVisible, setModalVisible] = useState(false);
+  const {
+    decks, flashcards, inboxDeckId,
+    editDeck, removeDeck, updateFlashcard, removeFlashcard,
+    removeMultipleFlashcards, moveFlashcard, moveMultipleFlashcards,
+    refresh,
+  } = useFlashcardStore();
 
-  const deck = decks.find(d => d.id === Number(id));
-  const deckCards = flashcards.filter(c => c.deck_id === Number(id));
-  
+  const deckId = Number(id);
+  const deck = decks.find(d => d.id === deckId);
+  const cards = flashcards.filter(c => c.deck_id === deckId);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showMeanings, setShowMeanings] = useState(false);
+  const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set());
+
+  // Multi-select
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<number>>(new Set());
+
+  // Edit card modal
+  const [selectedCard, setSelectedCard] = useState<Flashcard | null>(null);
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editData, setEditData] = useState({
+    english: '', vietnamese: '', grammar_note: '', example_en: '', example_vi: '', phonetic: '', word_type: ''
+  });
+  const [aiLoading, setAiLoading] = useState(false);
+
+  // Move modal
+  const [isMoveModalVisible, setIsMoveModalVisible] = useState(false);
+  const [moveSearch, setMoveSearch] = useState('');
+  const [movingForMulti, setMovingForMulti] = useState(false);
+
+  // Edit deck modal
+  const [isDeckEditModalVisible, setIsDeckEditModalVisible] = useState(false);
+  const [deckNameEdit, setDeckNameEdit] = useState('');
+
+  useFocusEffect(useCallback(() => { 
+    refresh(); 
+  }, []));
+
+  // Auto-open edit modal if editId is provided from search
+  useEffect(() => {
+    if (editId && cards.length > 0) {
+      const cardToEdit = cards.find(c => c.id === Number(editId));
+      if (cardToEdit) {
+        handleEditInit(cardToEdit);
+        // Clear the param after opening to avoid re-opening on every render
+        router.setParams({ editId: undefined });
+      }
+    }
+  }, [editId, cards.length]);
+
   const filteredCards = useMemo(() => {
-    return deckCards.filter(c => 
+    return cards.filter(c =>
       c.english.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.vietnamese.toLowerCase().includes(searchQuery.toLowerCase())
     );
-  }, [deckCards, searchQuery]);
+  }, [cards, searchQuery]);
 
   const stats = useMemo(() => {
-    const mastered = deckCards.filter(c => c.total_reps > 10).length; // Just a placeholder logic
-    const due = deckCards.length - mastered;
-    return { mastered, due };
-  }, [deckCards]);
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    let mastered = 0, due = 0;
+    for (const c of cards) {
+      const age = getAge(c.created_at);
+      const target = getTargetReps(age, dayOfWeek);
+      if (c.total_reps >= 10) mastered++;
+      else if (target > 0 && c.daily_reps < target) due++;
+    }
+    return { mastered, due, total: cards.length };
+  }, [cards]);
+
+  const filteredMoveDecks = useMemo(() =>
+    decks.filter(d => d.name.toLowerCase().includes(moveSearch.toLowerCase())),
+    [decks, moveSearch]
+  );
+
+  const handleEditInit = (card: Flashcard) => {
+    setSelectedCard(card);
+    setEditData({
+      english: card.english, vietnamese: card.vietnamese,
+      grammar_note: card.grammar_note || '', example_en: card.example_en || '',
+      example_vi: card.example_vi || '', phonetic: card.phonetic || '',
+      word_type: card.word_type || ''
+    });
+    setIsEditModalVisible(true);
+  };
+
+  const handleAiReanalyze = async () => {
+    if (!editData.english.trim()) return;
+    setAiLoading(true);
+    try {
+      const result = await reanalyzeCard(editData.english);
+      setEditData(prev => ({ ...prev, ...result }));
+    } catch (e: any) {
+      Alert.alert('AI Error', e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedCard) return;
+    await updateFlashcard({ id: selectedCard.id, ...editData } as any);
+    setIsEditModalVisible(false);
+  };
+
+  const handleDeleteCard = (card: Flashcard) => {
+    Alert.alert(
+      'Delete Card',
+      `What would you like to do with "${card.english}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Move to Inbox', 
+          onPress: async () => {
+            if (inboxDeckId) await moveFlashcard(card.id, inboxDeckId);
+          }
+        },
+        { 
+          text: 'Delete Permanently', 
+          style: 'destructive', 
+          onPress: () => removeFlashcard(card.id) 
+        },
+      ]
+    );
+  };
+
+  const handleMoveInit = (card: Flashcard) => {
+    setSelectedCard(card);
+    setMovingForMulti(false);
+    setMoveSearch('');
+    setIsMoveModalVisible(true);
+  };
+
+  const handleMoveMultiInit = () => {
+    setMovingForMulti(true);
+    setMoveSearch('');
+    setIsMoveModalVisible(true);
+  };
+
+  const handleMoveToDeck = async (targetDeckId: number) => {
+    if (movingForMulti) {
+      await moveMultipleFlashcards(Array.from(selectedCardIds), targetDeckId);
+      handleCancelMulti();
+    } else if (selectedCard) {
+      await moveFlashcard(selectedCard.id, targetDeckId);
+    }
+    setIsMoveModalVisible(false);
+  };
+
+  const handleLongPress = (id: number) => {
+    if (!isMultiSelectMode) { setIsMultiSelectMode(true); setSelectedCardIds(new Set([id])); }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedCardIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedCardIds.size === cards.length) setSelectedCardIds(new Set());
+    else setSelectedCardIds(new Set(cards.map(c => c.id)));
+  };
+
+  const handleCancelMulti = () => { setIsMultiSelectMode(false); setSelectedCardIds(new Set()); };
+
+  const handleDeleteMultiple = () => {
+    if (selectedCardIds.size === 0) return;
+    Alert.alert(
+      'Bulk Delete',
+      `What would you like to do with ${selectedCardIds.size} selected cards?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Move to Inbox',
+          onPress: async () => {
+            if (inboxDeckId) {
+              await moveMultipleFlashcards(Array.from(selectedCardIds), inboxDeckId);
+              handleCancelMulti();
+            }
+          }
+        },
+        {
+          text: 'Delete Permanently',
+          style: 'destructive',
+          onPress: async () => {
+            await removeMultipleFlashcards(Array.from(selectedCardIds));
+            handleCancelMulti();
+          }
+        },
+      ]
+    );
+  };
+
+  const handleDeleteDeck = () => {
+    if (!deck || deck.id === inboxDeckId) return;
+    Alert.alert('Delete Collection', `Delete "${deck.name}"? All cards will be moved to Inbox.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await removeDeck(deckId); router.back(); } },
+    ]);
+  };
+
+  const handleSingleDelete = (card: Flashcard) => {
+    Alert.alert(
+      'Delete Card',
+      `What would you like to do with "${card.english}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Move to Inbox',
+          onPress: async () => {
+            if (inboxDeckId) {
+              await moveFlashcard(card.id, inboxDeckId);
+              setDetailVisible(false);
+            }
+          }
+        },
+        { 
+          text: 'Delete Permanently', 
+          style: 'destructive', 
+          onPress: async () => {
+            await removeFlashcard(card.id);
+            setDetailVisible(false);
+          } 
+        },
+      ]
+    );
+  };
+
+  const handleEditCard = (card: Flashcard) => {
+    setDetailVisible(false);
+    handleEditInit(card);
+  };
+
+  const handleEditDeck = async () => {
+    if (!deckNameEdit.trim()) return;
+    await editDeck(deckId, deckNameEdit.trim());
+    setIsDeckEditModalVisible(false);
+  };
 
   if (!deck) return null;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <WordDetailModal
+        visible={detailVisible}
+        word={selectedCard}
+        onClose={() => setDetailVisible(false)}
+        onEdit={handleEditCard}
+        onDelete={handleSingleDelete}
+      />
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <ChevronLeft size={28} color={COLORS.primary} />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <ChevronLeft size={22} color={COLORS.primary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1}>{deck.name}</Text>
-        <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.iconBtn}>
-            <Edit3 size={20} color={COLORS.textSecondary} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn}>
-            <Trash2 size={20} color={COLORS.danger} />
-          </TouchableOpacity>
+        <View style={{ flexDirection: 'row' }}>
+          {deck.id !== inboxDeckId && (
+            <>
+              <TouchableOpacity
+                style={styles.iconBtn}
+                onPress={() => { setDeckNameEdit(deck.name); setIsDeckEditModalVisible(true); }}
+              >
+                <Edit2 size={18} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.iconBtn} onPress={handleDeleteDeck}>
+                <Trash2 size={18} color={COLORS.danger} />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
 
@@ -65,252 +328,328 @@ export default function DeckDetailScreen() {
           <View style={[styles.statDot, { backgroundColor: COLORS.warning }]} />
           <Text style={styles.statText}>Due: {stats.due}</Text>
         </View>
-        <TouchableOpacity 
-          style={styles.fullReviewBtn}
-          onPress={() => router.push(`/session/${id}`)}
-        >
-          <Brain size={18} color="white" />
-          <Text style={styles.fullReviewText}>Full Review</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TouchableOpacity style={styles.studyBtn} onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(deckId) } })}>
+            <Play size={12} color="white" fill="white" />
+            <Text style={styles.studyBtnText}>Learn Due</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.studyBtn, { backgroundColor: 'white', borderWidth: 1, borderColor: COLORS.border }]}
+            onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(deckId), mode: 'all' } })}
+          >
+            <Brain size={12} color={COLORS.primary} />
+            <Text style={[styles.studyBtnText, { color: COLORS.primary }]}>Full Review</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Search Bar */}
-      <View style={styles.searchContainer}>
-        <Search size={20} color={COLORS.textMuted} />
+      {/* Search + Controls */}
+      <View style={styles.searchBar}>
+        <Search size={16} color={COLORS.textMuted} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search words..."
           value={searchQuery}
           onChangeText={setSearchQuery}
+          placeholderTextColor={COLORS.textMuted}
         />
-        <TouchableOpacity>
-          <Eye size={20} color={COLORS.textSecondary} />
-        </TouchableOpacity>
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <X size={16} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        )}
+        {isMultiSelectMode ? (
+          <TouchableOpacity onPress={toggleSelectAll} style={styles.toggleAllBtn}>
+            <Text style={styles.toggleAllText}>{selectedCardIds.size === cards.length ? 'None' : 'All'}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={() => { setShowMeanings(v => !v); setRevealedIds(new Set()); }}>
+            {showMeanings ? <EyeOff size={16} color={COLORS.textSecondary} /> : <Eye size={16} color={COLORS.textSecondary} />}
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Word List */}
-      <FlatList
-        data={filteredCards}
-        keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => (
-          <Card 
-            style={styles.wordCard} 
+      {/* Card List */}
+      <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={styles.listContent}>
+        {filteredCards.map(card => (
+          <TouchableOpacity
+            key={card.id}
+            onLongPress={() => handleLongPress(card.id)}
             onPress={() => {
-              setSelectedWord(item);
-              setModalVisible(true);
+              if (isMultiSelectMode) {
+                toggleSelect(card.id);
+              } else {
+                setSelectedCard(card);
+                setDetailVisible(true);
+              }
             }}
+            activeOpacity={0.85}
+            style={[styles.cardRow, selectedCardIds.has(card.id) && styles.cardRowSelected]}
           >
-            <View style={styles.wordMain}>
-              <View style={styles.wordHeader}>
-                <Text style={styles.wordText}>{item.english}</Text>
-                <Badge label={item.word_type.toUpperCase()} variant="muted" />
+            {isMultiSelectMode && (
+              <View style={[styles.checkbox, selectedCardIds.has(card.id) && styles.checkboxChecked]}>
+                {selectedCardIds.has(card.id) && <Check size={10} color="white" />}
               </View>
-              <Text style={styles.revealText}>Tap to reveal...</Text>
-              <View style={styles.learningStatus}>
-                <View style={[styles.statusDot, { backgroundColor: COLORS.border }]} />
-                <Text style={styles.statusText}>LEARNING</Text>
+            )}
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={styles.cardEn} numberOfLines={1}>{card.english}</Text>
+                {card.word_type && (
+                  <View style={styles.wordTypeBadge}>
+                    <Text style={styles.wordTypeText}>{card.word_type}</Text>
+                  </View>
+                )}
               </View>
+              {(showMeanings || revealedIds.has(card.id)) ? (
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setRevealedIds(prev => {
+                      const next = new Set(prev);
+                      next.delete(card.id);
+                      return next;
+                    });
+                  }}
+                >
+                  <Text style={styles.cardVi} numberOfLines={1}>{card.vietnamese}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity 
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setRevealedIds(prev => {
+                      const next = new Set(prev);
+                      next.add(card.id);
+                      return next;
+                    });
+                  }}
+                >
+                  <Text style={styles.tapReveal}>Tap to reveal...</Text>
+                </TouchableOpacity>
+              )}
             </View>
-            <View style={styles.wordActions}>
-              <TouchableOpacity style={styles.wordActionBtn}>
-                <Edit3 size={18} color={COLORS.textSecondary} />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.wordActionBtn} 
-                onPress={() => removeFlashcard(item.id)}
-              >
-                <Trash2 size={18} color={COLORS.danger} />
-              </TouchableOpacity>
-            </View>
-          </Card>
-        )}
-        ListEmptyComponent={
+          </TouchableOpacity>
+        ))}
+        {cards.length === 0 && (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No words found in this collection.</Text>
+            <Text style={styles.emptyTitle}>No cards yet</Text>
+            <Text style={styles.emptySubtitle}>Tap + to add words with AI Tutor</Text>
           </View>
-        }
-      />
+        )}
+        <View style={{ height: 100 }} />
+      </ScrollView>
 
-      {/* Floating Action Button */}
-      <TouchableOpacity 
-        style={styles.fab}
-        onPress={() => router.push('/tutor')}
-      >
-        <Plus size={32} color="white" />
-      </TouchableOpacity>
+      {/* Multi-select bar */}
+      {isMultiSelectMode && (
+        <View style={styles.multiBar}>
+          <TouchableOpacity onPress={handleCancelMulti}><X size={20} color="white" /></TouchableOpacity>
+          <Text style={styles.multiBarText}>{selectedCardIds.size} cards</Text>
+          <View style={{ flexDirection: 'row', gap: 16 }}>
+            <TouchableOpacity onPress={handleMoveMultiInit}><Move size={18} color="white" /></TouchableOpacity>
+            <TouchableOpacity onPress={handleDeleteMultiple}><Trash2 size={18} color="#ff4444" /></TouchableOpacity>
+          </View>
+        </View>
+      )}
 
-      <WordDetailModal
-        word={selectedWord}
-        visible={modalVisible}
-        onClose={() => setModalVisible(false)}
-      />
+      {/* FAB */}
+      {!isMultiSelectMode && (
+        <TouchableOpacity style={styles.fab} onPress={() => router.push('/tutor')}>
+          <Plus size={28} color="white" />
+        </TouchableOpacity>
+      )}
+
+      {/* Edit Card Modal */}
+      <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={styles.modalSheet}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Edit Card</Text>
+                <TouchableOpacity
+                  onPress={handleAiReanalyze}
+                  disabled={aiLoading}
+                  style={styles.aiBadge}
+                >
+                  {aiLoading ? <ActivityIndicator size={12} color={COLORS.primary} /> : <Sparkles size={12} color={COLORS.primary} />}
+                  <Text style={styles.aiText}>AI Fix</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
+                {(['english', 'vietnamese', 'phonetic', 'word_type', 'grammar_note', 'example_en', 'example_vi'] as const).map(field => (
+                  <View key={field} style={{ marginBottom: 12 }}>
+                    <Text style={styles.inputLabel}>{field.replace('_', ' ').toUpperCase()}</Text>
+                    <TextInput
+                      style={[styles.textInput, ['grammar_note', 'example_en', 'example_vi'].includes(field) && { minHeight: 60 }]}
+                      value={(editData as any)[field]}
+                      onChangeText={v => setEditData(p => ({ ...p, [field]: v }))}
+                      multiline={['grammar_note', 'example_en', 'example_vi'].includes(field)}
+                    />
+                  </View>
+                ))}
+                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveEdit}>
+                  <Text style={styles.saveBtnText}>Save Changes</Text>
+                </TouchableOpacity>
+                <View style={{ height: 20 }} />
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Move Modal */}
+      <Modal visible={isMoveModalVisible} transparent animationType="slide" onRequestClose={() => setIsMoveModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsMoveModalVisible(false)} />
+          <View style={[styles.modalSheet, { maxHeight: '70%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Move to...</Text>
+              <TouchableOpacity onPress={() => setIsMoveModalVisible(false)}><X size={20} color={COLORS.textSecondary} /></TouchableOpacity>
+            </View>
+            <TextInput
+              style={[styles.textInput, { marginBottom: 12 }]}
+              placeholder="Search decks..."
+              value={moveSearch}
+              onChangeText={setMoveSearch}
+              placeholderTextColor={COLORS.textMuted}
+            />
+            <ScrollView>
+              {filteredMoveDecks.map(d => (
+                <TouchableOpacity key={d.id} onPress={() => handleMoveToDeck(d.id)} style={styles.deckMoveRow}>
+                  <Text style={styles.deckMoveName}>{d.name}</Text>
+                  <ChevronRight size={18} color={COLORS.primary} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit Deck Name Modal */}
+      <Modal visible={isDeckEditModalVisible} transparent animationType="fade" onRequestClose={() => setIsDeckEditModalVisible(false)}>
+        <View style={[styles.modalOverlay, { justifyContent: 'center', paddingHorizontal: 24 }]}>
+          <View style={[styles.modalSheet, { borderRadius: LAYOUT.radiusLarge }]}>
+            <Text style={[styles.modalTitle, { marginBottom: 16 }]}>Edit Collection Name</Text>
+            <TextInput
+              style={[styles.textInput, { marginBottom: 16 }]}
+              value={deckNameEdit}
+              onChangeText={setDeckNameEdit}
+              autoFocus
+            />
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: COLORS.border }]} onPress={() => setIsDeckEditModalVisible(false)}>
+                <Text style={[styles.saveBtnText, { color: COLORS.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.saveBtn, { flex: 1 }]} onPress={handleEditDeck}>
+                <Text style={styles.saveBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
+  container: { flex: 1, backgroundColor: COLORS.background },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 16,
-    backgroundColor: 'white',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 12, paddingVertical: 10, backgroundColor: 'white',
   },
-  backBtn: {
-    padding: 4,
-  },
+  backBtn: { padding: 4 },
   headerTitle: {
-    flex: 1,
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 20,
-    color: COLORS.textPrimary,
-    textAlign: 'center',
-    marginHorizontal: 12,
+    flex: 1, fontFamily: 'Outfit_700Bold', fontSize: 16,
+    color: COLORS.textPrimary, textAlign: 'center', marginHorizontal: 12,
   },
-  headerActions: {
-    flexDirection: 'row',
-  },
-  iconBtn: {
-    padding: 8,
-    marginLeft: 4,
-  },
+  iconBtn: { padding: 6, marginLeft: 2 },
   statsBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    borderBottomLeftRadius: LAYOUT.radiusLarge,
-    borderBottomRightRadius: LAYOUT.radiusLarge,
-    ...LAYOUT.shadow,
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6,
+    backgroundColor: 'white', paddingHorizontal: 16, paddingBottom: 12,
+    paddingTop: 2,
   },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginRight: 16,
+  statItem: { flexDirection: 'row', alignItems: 'center' },
+  statDot: { width: 6, height: 6, borderRadius: 3, marginRight: 5 },
+  statText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.textSecondary },
+  studyBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, gap: 4,
   },
-  statDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  statText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 13,
-    color: COLORS.textSecondary,
-  },
-  fullReviewBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.primary,
-    height: 40,
-    borderRadius: 20,
-    marginLeft: 8,
-  },
-  fullReviewText: {
-    fontFamily: 'Outfit_600SemiBold',
-    fontSize: 14,
-    color: 'white',
-    marginLeft: 8,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    margin: 20,
-    paddingHorizontal: 16,
-    height: 54,
-    borderRadius: LAYOUT.radiusMedium,
+  studyBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 11, color: 'white' },
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
+    margin: 16, paddingHorizontal: 12, height: 42, borderRadius: LAYOUT.radiusSmall,
     ...LAYOUT.shadow,
   },
   searchInput: {
-    flex: 1,
-    marginHorizontal: 12,
-    fontFamily: 'Inter_400Regular',
-    fontSize: 16,
-    color: COLORS.textPrimary,
+    flex: 1, marginHorizontal: 8, fontFamily: 'Inter_400Regular',
+    fontSize: 14, color: COLORS.textPrimary,
   },
-  listContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 100,
+  toggleAllBtn: { backgroundColor: COLORS.border, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  toggleAllText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: COLORS.textSecondary },
+  listContent: { paddingHorizontal: 16 },
+  cardRow: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
+    borderRadius: LAYOUT.radiusSmall, padding: 12, marginBottom: 8, ...LAYOUT.shadow,
   },
-  wordCard: {
-    flexDirection: 'row',
-    padding: 16,
-    marginBottom: 12,
+  cardRowSelected: { borderWidth: 1.5, borderColor: COLORS.primary },
+  checkbox: {
+    width: 18, height: 18, borderRadius: 4, borderWidth: 1.5,
+    borderColor: COLORS.border, marginRight: 10, alignItems: 'center', justifyContent: 'center',
   },
-  wordMain: {
-    flex: 1,
+  checkboxChecked: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  cardEn: { fontFamily: 'Outfit_700Bold', fontSize: 15, color: COLORS.textPrimary, flex: 1 },
+  wordTypeBadge: { backgroundColor: COLORS.border, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, marginLeft: 6 },
+  wordTypeText: { fontFamily: 'Inter_500Medium', fontSize: 8, color: COLORS.textSecondary },
+  cardVi: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 2 },
+  tapReveal: { fontFamily: 'Inter_400Regular', fontSize: 11, color: COLORS.border, fontStyle: 'italic', marginTop: 2 },
+  progressRow: { flexDirection: 'row', gap: 3, marginTop: 6 },
+  dot: { width: 5, height: 5, borderRadius: 2.5 },
+  dotFilled: { backgroundColor: COLORS.success },
+  dotEmpty: { backgroundColor: COLORS.border },
+  cardActions: { flexDirection: 'row', marginLeft: 8 },
+  emptyContainer: { alignItems: 'center', paddingVertical: 60 },
+  emptyTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 20, color: COLORS.textPrimary, marginTop: 16 },
+  emptySubtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 8 },
+  multiBar: {
+    position: 'absolute', bottom: 16, left: 16, right: 16,
+    backgroundColor: '#1A1A1A', borderRadius: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingVertical: 12,
   },
-  wordHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  wordText: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 20,
-    color: COLORS.textPrimary,
-  },
-  revealText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    color: COLORS.textMuted,
-    marginTop: 4,
-  },
-  learningStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 6,
-  },
-  statusText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 10,
-    letterSpacing: 1,
-    color: COLORS.textMuted,
-  },
-  wordActions: {
-    justifyContent: 'center',
-  },
-  wordActionBtn: {
-    padding: 8,
-  },
-  emptyContainer: {
-    padding: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 16,
-    color: COLORS.textMuted,
-    textAlign: 'center',
-  },
+  multiBarText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
   fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 20,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...LAYOUT.shadow,
-    elevation: 5,
+    position: 'absolute', right: 16, bottom: 16, width: 52, height: 52,
+    borderRadius: 26, backgroundColor: COLORS.primary,
+    alignItems: 'center', justifyContent: 'center', ...LAYOUT.shadow,
   },
+  // Modals
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: 'white', borderTopLeftRadius: 20,
+    borderTopRightRadius: 20, padding: 20, maxHeight: '90%',
+  },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary },
+  aiBadge: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, gap: 4,
+  },
+  aiText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: COLORS.primary },
+  inputLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted, letterSpacing: 0.8, marginBottom: 4 },
+  textInput: {
+    backgroundColor: COLORS.background, borderRadius: LAYOUT.radiusXSmall,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textPrimary,
+    borderWidth: 1, borderColor: COLORS.border, textAlignVertical: 'top',
+  },
+  saveBtn: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 12, alignItems: 'center' },
+  saveBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
+  deckMoveRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 12, borderTopWidth: 1, borderTopColor: COLORS.border,
+  },
+  deckMoveName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
 });

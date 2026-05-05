@@ -1,68 +1,202 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as Speech from 'expo-speech';
+import {
+  Camera,
+  Check,
+  ChevronDown,
+  Image as ImageIcon,
+  Save, Search,
+  Sparkles,
+  Volume2,
+  X
+} from 'lucide-react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform, ScrollView,
+  StyleSheet,
+  Text,
+  TextInput, TouchableOpacity,
+  View
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Sparkles, Camera, Image as ImageIcon, X, Zap } from 'lucide-react-native';
-import { COLORS, LAYOUT } from '../../constants/theme';
-import { analyzeWord } from '../../lib/gemini';
-import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { COLORS, LAYOUT } from '../../constants/theme';
+import { analyzeInput, extractFromImage } from '../../lib/gemini';
+import { useFlashcardStore } from '../../store/useFlashcardStore';
 
 export default function TutorScreen() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
-  const { addFlashcard, decks } = useFlashcardStore();
+  const [uncheckedIndices, setUncheckedIndices] = useState<Set<number>>(new Set());
+  const [cardDecks, setCardDecks] = useState<Record<number, { deckId?: number; newDeckName?: string }>>({});
+  
+  // Deck selector
+  const [isDeckModalVisible, setIsDeckModalVisible] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | 'master' | null>(null);
+  const [deckSearch, setDeckSearch] = useState('');
+
+  const { decks, addFlashcardsBulk, findDuplicate, addDeck, inboxDeckId, refresh } = useFlashcardStore();
+
+  const handleAiResult = (data: any) => {
+    setResult(data);
+    setUncheckedIndices(new Set());
+    
+    if (data && data.flashcards) {
+      const initialMap: Record<number, { deckId?: number; newDeckName?: string }> = {};
+      data.flashcards.forEach((card: any, idx: number) => {
+        if (card.suggested_deck) {
+          const existing = decks.find(d => d.name.toLowerCase() === card.suggested_deck.toLowerCase());
+          if (existing) {
+            initialMap[idx] = { deckId: existing.id };
+          } else {
+            initialMap[idx] = { newDeckName: card.suggested_deck };
+          }
+        } else {
+          initialMap[idx] = { deckId: inboxDeckId || undefined };
+        }
+      });
+      setCardDecks(initialMap);
+    }
+  };
 
   const handleAnalyze = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || loading) return;
     setLoading(true);
     try {
-      const data = await analyzeWord(input);
-      setResult(data);
-    } catch (error) {
-      console.error(error);
-      alert('Analysis failed. Please check your API keys.');
+      const existingDeckNames = decks.map(d => d.name);
+      const data = await analyzeInput(input, undefined, existingDeckNames);
+      handleAiResult(data);
+    } catch (error: any) {
+      Alert.alert("Analysis Failed", error.message || "Please check your API keys.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSave = async () => {
-    if (!result || decks.length === 0) {
-      alert('Please create a collection first in the Library tab.');
-      return;
-    }
-    
+  const handlePickImage = async (useCamera: boolean) => {
     try {
-      await addFlashcard({
-        deck_id: decks[0].id, // Default to first deck for now
-        english: result.english,
-        vietnamese: result.vietnamese,
-        phonetic: result.phonetic,
-        word_type: result.word_type,
-        grammar_note: result.grammar_note,
-        example_en: result.example_en,
-        example_vi: result.example_vi,
-      });
-      alert('Card saved to ' + decks[0].name);
-      setResult(null);
-      setInput('');
-    } catch (error) {
-      alert('Failed to save card.');
+      const permission = useCamera 
+        ? await ImagePicker.requestCameraPermissionsAsync() 
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        Alert.alert("Permission Required", "Camera/Media access is needed to scan vocabulary.");
+        return;
+      }
+
+      const pickerResult = useCamera 
+        ? await ImagePicker.launchCameraAsync({ quality: 0.8, base64: true })
+        : await ImagePicker.launchImageLibraryAsync({ quality: 0.8, base64: true });
+
+      if (!pickerResult.canceled && pickerResult.assets[0].base64) {
+        setLoading(true);
+        const { base64, mimeType } = pickerResult.assets[0];
+        const existingDeckNames = decks.map(d => d.name);
+        try {
+          const data = await extractFromImage(base64, mimeType || 'image/jpeg', existingDeckNames);
+          if (data && data.flashcards?.length > 0) {
+            handleAiResult(data);
+          } else {
+            Alert.alert("Notice", "No vocabulary found in this image.");
+          }
+        } catch (err: any) {
+          Alert.alert("Scan Error", err.message);
+        }
+      }
+    } catch (error: any) {
+      Alert.alert("Error", error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const handleSaveBulk = async () => {
+    if (!result || !result.flashcards || loading) return;
+    
+    const validIndices = result.flashcards
+      .map((_: any, i: number) => i)
+      .filter((i: number) => !uncheckedIndices.has(i));
+    
+    if (validIndices.length === 0) return;
+
+    setLoading(true);
+    try {
+      const operations: any[] = [];
+      
+      for (const idx of validIndices) {
+        const card = result.flashcards[idx];
+        const target = cardDecks[idx];
+        let finalDeckId = inboxDeckId;
+
+        if (target?.deckId) {
+          finalDeckId = target.deckId;
+        } else if (target?.newDeckName) {
+          let existing = decks.find(d => d.name === target.newDeckName);
+          if (!existing) {
+            await addDeck(target.newDeckName!, '📚');
+            await refresh();
+            existing = useFlashcardStore.getState().decks.find(d => d.name === target.newDeckName);
+          }
+          if (existing) finalDeckId = existing.id;
+        }
+
+        operations.push({
+          deck_id: finalDeckId,
+          english: card.english,
+          vietnamese: card.vietnamese,
+          phonetic: card.phonetic,
+          word_type: card.word_type,
+          grammar_note: card.grammar_note,
+          example_en: card.example_en,
+          example_vi: card.example_vi,
+        });
+      }
+
+      await addFlashcardsBulk(operations);
+      Alert.alert("Success", `Added ${operations.length} cards to your library.`);
+      setResult(null);
+      setInput('');
+    } catch (error: any) {
+      Alert.alert("Save Error", error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleCheck = (idx: number) => {
+    setUncheckedIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  const openDeckSelector = (idx: number | 'master') => {
+    setEditingIndex(idx);
+    setIsDeckModalVisible(true);
+  };
+
+  const filteredDecks = decks.filter(d => d.name.toLowerCase().includes(deckSearch.toLowerCase()));
+
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.title}>AI Tutor</Text>
-          <Text style={styles.subtitle}>Smart grammar check and automated card creation.</Text>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.header}>
+            <Text style={styles.title}>AI Tutor</Text>
+            <Text style={styles.subtitle}>Smart grammar check and automated card creation.</Text>
+          </View>
 
+          {/* Input Box */}
           <View style={styles.inputCard}>
             <TextInput
               style={styles.input}
@@ -72,19 +206,17 @@ export default function TutorScreen() {
               value={input}
               onChangeText={setInput}
             />
-            
             <View style={styles.inputActions}>
-              <View style={styles.leftActions}>
-                <TouchableOpacity style={styles.iconBtn}>
+              <View style={styles.mediaBtns}>
+                <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(true)}>
                   <Camera size={20} color={COLORS.textSecondary} />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.iconBtn}>
+                <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(false)}>
                   <ImageIcon size={20} color={COLORS.textSecondary} />
                 </TouchableOpacity>
               </View>
-
-              <View style={styles.rightActions}>
-                <TouchableOpacity style={styles.closeBtn} onPress={() => setInput('')}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <TouchableOpacity onPress={() => setInput('')}>
                   <X size={20} color={COLORS.textSecondary} />
                 </TouchableOpacity>
                 <TouchableOpacity 
@@ -92,11 +224,9 @@ export default function TutorScreen() {
                   onPress={handleAnalyze}
                   disabled={loading || !input.trim()}
                 >
-                  {loading ? (
-                    <ActivityIndicator color="white" size="small" />
-                  ) : (
+                  {loading ? <ActivityIndicator color="white" size="small" /> : (
                     <>
-                      <Sparkles size={20} color="white" />
+                      <Sparkles size={18} color="white" />
                       <Text style={styles.analyzeText}>Analyze</Text>
                     </>
                   )}
@@ -105,189 +235,227 @@ export default function TutorScreen() {
             </View>
           </View>
 
+          {/* Analysis Results */}
           {result && (
-            <View style={styles.resultContainer}>
-              <View style={styles.resultHeader}>
-                <Text style={styles.resultTitle}>{result.english}</Text>
-                <Badge label={result.word_type?.toUpperCase()} variant="primary" />
-              </View>
-              
-              <Text style={styles.phonetic}>{result.phonetic}</Text>
-              
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>MEANING</Text>
-                <Text style={styles.meaningText}>{result.vietnamese}</Text>
+            <View style={styles.resultsContainer}>
+              <View style={styles.resultsHeader}>
+                <Text style={styles.resultsTitle}>Found {result.flashcards?.length || 0} cards</Text>
+                <TouchableOpacity onPress={() => setUncheckedIndices(new Set())}>
+                  <Text style={styles.selectAllText}>Select All</Text>
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>GRAMMAR NOTE</Text>
-                <View style={styles.noteBox}>
-                  <Text style={styles.noteText}>{result.grammar_note}</Text>
-                </View>
-              </View>
+              {result.flashcards?.map((card: any, idx: number) => (
+                <TouchableOpacity 
+                  key={idx}
+                  activeOpacity={0.9}
+                  onPress={() => toggleCheck(idx)}
+                  style={[styles.cardPreview, uncheckedIndices.has(idx) && styles.cardUnchecked]}
+                >
+                  <View style={[styles.checkbox, !uncheckedIndices.has(idx) && styles.checkboxChecked]}>
+                    {!uncheckedIndices.has(idx) && <Check size={10} color="white" />}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.cardHeader}>
+                      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <Text style={styles.cardEn}>{card.english}</Text>
+                        {card.word_type && (
+                          <Badge label={card.word_type} variant="muted" style={{ marginLeft: 8 }} />
+                        )}
+                      </View>
+                      <TouchableOpacity onPress={(e) => { e.stopPropagation(); Speech.speak(card.english, { language: 'en-US' }); }}>
+                        <Volume2 size={18} color={COLORS.primary} />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.cardPhonetic}>{card.phonetic}</Text>
+                    <Text style={styles.cardVi}>{card.vietnamese}</Text>
+                    
+                    {card.grammar_note && (
+                      <Text style={styles.cardNote}>{card.grammar_note}</Text>
+                    )}
 
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>EXAMPLE</Text>
-                <Text style={styles.exampleEn}>{result.example_en}</Text>
-                <Text style={styles.exampleVi}>{result.example_vi}</Text>
-              </View>
+                    <TouchableOpacity 
+                      onPress={(e) => { e.stopPropagation(); openDeckSelector(idx); }}
+                      style={styles.deckChip}
+                    >
+                      <Text style={styles.deckLabel}>Save to:</Text>
+                      <Text style={styles.deckValue}>
+                        {cardDecks[idx]?.newDeckName ? `${cardDecks[idx].newDeckName} (New)` : 
+                         (decks.find(d => d.id === cardDecks[idx]?.deckId)?.name || 'Inbox')}
+                      </Text>
+                      <ChevronDown size={14} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
+              ))}
 
-              <Button 
-                title="Add to Library" 
-                onPress={handleSave} 
-                icon={<Zap size={20} color="white" />}
-                style={styles.saveBtn}
-              />
+              {/* Master Override & Save */}
+              <View style={styles.saveCard}>
+                <Text style={styles.masterLabel}>APPLY TO ALL SELECTED</Text>
+                <TouchableOpacity 
+                  onPress={() => openDeckSelector('master')}
+                  style={styles.masterSelector}
+                >
+                  <Text style={styles.masterValue} numberOfLines={1}>
+                    {decks.find(d => d.id === cardDecks[Object.keys(cardDecks)[0] as any]?.deckId)?.name || 'Select collection...'}
+                  </Text>
+                  <ChevronDown size={18} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+
+                <Button 
+                  title={`Save ${result.flashcards?.length - uncheckedIndices.size} Cards`}
+                  onPress={handleSaveBulk}
+                  loading={loading}
+                  icon={<Save size={20} color="white" />}
+                  style={{ marginTop: 12 }}
+                />
+              </View>
             </View>
           )}
+          <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Deck Selector Modal */}
+      <Modal visible={isDeckModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setIsDeckModalVisible(false)} />
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Collection</Text>
+              <TouchableOpacity onPress={() => setIsDeckModalVisible(false)}>
+                <X size={24} color={COLORS.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalSearch}>
+              <Search size={18} color={COLORS.textMuted} />
+              <TextInput 
+                style={styles.modalSearchInput} 
+                placeholder="Search..." 
+                value={deckSearch}
+                onChangeText={setDeckSearch}
+              />
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {filteredDecks.map(deck => (
+                <TouchableOpacity 
+                  key={deck.id}
+                  onPress={() => {
+                    if (editingIndex === 'master') {
+                      const newMap = { ...cardDecks };
+                      Object.keys(newMap).forEach(k => {
+                        newMap[parseInt(k)] = { deckId: deck.id };
+                      });
+                      setCardDecks(newMap);
+                    } else if (editingIndex !== null) {
+                      setCardDecks(prev => ({ ...prev, [editingIndex]: { deckId: deck.id } }));
+                    }
+                    setIsDeckModalVisible(false);
+                    setDeckSearch('');
+                  }}
+                  style={styles.deckOption}
+                >
+                  <Text style={styles.deckOptionText}>{deck.name}</Text>
+                  {deck.id === inboxDeckId && <Badge label="INBOX" variant="muted" />}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  scrollContent: {
-    padding: 20,
-  },
-  title: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 32,
-    color: COLORS.textPrimary,
-  },
-  subtitle: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 16,
-    color: COLORS.textSecondary,
-    marginTop: 8,
-    marginBottom: 24,
-  },
+  container: { flex: 1, backgroundColor: COLORS.background },
+  scrollContent: { padding: 16 },
+  header: { marginBottom: 20 },
+  title: { fontFamily: 'Outfit_700Bold', fontSize: 28, color: COLORS.textPrimary },
+  subtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 4 },
+  
   inputCard: {
-    backgroundColor: 'white',
-    borderRadius: LAYOUT.radiusMedium,
-    padding: 16,
-    minHeight: 180,
-    ...LAYOUT.shadow,
+    backgroundColor: 'white', borderRadius: LAYOUT.radiusSmall,
+    padding: 14, minHeight: 160, ...LAYOUT.shadow,
   },
   input: {
-    flex: 1,
-    fontFamily: 'Inter_400Regular',
-    fontSize: 18,
-    color: COLORS.textPrimary,
-    textAlignVertical: 'top',
-    minHeight: 100,
+    flex: 1, fontFamily: 'Inter_400Regular', fontSize: 15,
+    color: COLORS.textPrimary, textAlignVertical: 'top', minHeight: 80,
   },
   inputActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 12,
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginTop: 10,
   },
-  leftActions: {
-    flexDirection: 'row',
-  },
-  rightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  closeBtn: {
-    marginRight: 12,
+  mediaBtns: { flexDirection: 'row', gap: 6 },
+  mediaBtn: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: COLORS.background,
+    alignItems: 'center', justifyContent: 'center',
   },
   analyzeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#99C1FF', // Light primary as in mockup
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: LAYOUT.radiusSmall,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, gap: 6,
   },
-  disabledBtn: {
-    opacity: 0.5,
+  disabledBtn: { opacity: 0.5 },
+  analyzeText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
+
+  resultsContainer: { marginTop: 24 },
+  resultsHeader: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 12, paddingHorizontal: 4,
   },
-  analyzeText: {
-    fontFamily: 'Outfit_600SemiBold',
-    fontSize: 16,
-    color: 'white',
-    marginLeft: 8,
+  resultsTitle: { fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary },
+  selectAllText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.primary, textTransform: 'uppercase' },
+
+  cardPreview: {
+    flexDirection: 'row', backgroundColor: 'white', borderRadius: LAYOUT.radiusSmall,
+    padding: 12, marginBottom: 10, ...LAYOUT.shadow, gap: 10,
   },
-  resultContainer: {
-    marginTop: 24,
-    backgroundColor: 'white',
-    borderRadius: LAYOUT.radiusMedium,
-    padding: 20,
-    ...LAYOUT.shadow,
+  cardUnchecked: { opacity: 0.5 },
+  checkbox: {
+    width: 18, height: 18, borderRadius: 5, borderWidth: 1.5,
+    borderColor: COLORS.border, marginTop: 2, alignItems: 'center', justifyContent: 'center',
   },
-  resultHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  checkboxChecked: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  cardEn: { fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary, flexShrink: 1 },
+  cardPhonetic: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.primary, marginTop: 1 },
+  cardVi: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 2 },
+  cardNote: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textMuted, fontStyle: 'italic', marginTop: 8 },
+  deckChip: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start',
+    marginTop: 10, gap: 4, borderWidth: 1, borderColor: COLORS.border,
   },
-  resultTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 24,
-    color: COLORS.textPrimary,
-    flex: 1,
-    marginRight: 12,
+  deckLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted },
+  deckValue: { fontFamily: 'Outfit_600SemiBold', fontSize: 11, color: COLORS.textPrimary },
+
+  saveCard: {
+    backgroundColor: 'white', borderRadius: LAYOUT.radiusSmall,
+    padding: 16, marginTop: 8, ...LAYOUT.shadow,
   },
-  phonetic: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 16,
-    color: COLORS.primary,
-    marginTop: 4,
+  masterLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, letterSpacing: 1.2, color: COLORS.textMuted, marginBottom: 6 },
+  masterSelector: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: COLORS.background, padding: 12, borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.border, marginBottom: 10,
   },
-  section: {
-    marginTop: 20,
+  masterValue: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary, flex: 1 },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: 'white', borderTopLeftRadius: 20,
+    borderTopRightRadius: 20, padding: 20, maxHeight: '80%',
   },
-  sectionLabel: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 12,
-    color: COLORS.textMuted,
-    letterSpacing: 1,
-    marginBottom: 8,
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20, color: COLORS.textPrimary },
+  modalSearch: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background,
+    paddingHorizontal: 10, height: 40, borderRadius: 8, marginBottom: 12,
   },
-  meaningText: {
-    fontFamily: 'Outfit_600SemiBold',
-    fontSize: 20,
-    color: COLORS.textPrimary,
+  modalSearchInput: { flex: 1, marginLeft: 8, fontFamily: 'Inter_400Regular', fontSize: 14 },
+  deckOption: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  noteBox: {
-    backgroundColor: '#FFF9F0',
-    padding: 12,
-    borderRadius: LAYOUT.radiusSmall,
-    borderLeftWidth: 3,
-    borderLeftColor: COLORS.warning,
-  },
-  noteText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    lineHeight: 20,
-  },
-  exampleEn: {
-    fontFamily: 'Outfit_600SemiBold',
-    fontSize: 16,
-    color: COLORS.textPrimary,
-  },
-  exampleVi: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-  },
-  saveBtn: {
-    marginTop: 24,
-  }
+  deckOptionText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
 });

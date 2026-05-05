@@ -88,21 +88,6 @@ export function buildStudyQueue(cards: Flashcard[]): Flashcard[] {
     return isDueToday || isOverdue(card, now);
   });
 
-  // Sort: Overdue first (oldest first), then Today's cards (newest first)
-  return dueCards.sort((a, b) => {
-    const overdueA = isOverdue(a, now);
-    const overdueB = isOverdue(b, now);
-
-    if (overdueA && !overdueB) return -1;
-    if (!overdueA && overdueB) return 1;
-
-    const ageA = getAge(a.created_at);
-    const ageB = getAge(b.created_at);
-
-    if (overdueA) {
-      return ageB - ageA; // Oldest overdue first
-    } else {
-      return ageA - ageB; // Newest today first
-    }
-  });
+  // Shuffle the due cards randomly as requested
+  return dueCards.sort(() => Math.random() - 0.5);
 }

@@ -29,9 +29,7 @@ export interface Flashcard {
 
 export interface ApiKey {
   id: number;
-  label: string;
   api_key: string;
-  priority: number;
   is_active: boolean; // 1 or 0 in DB
   fail_count: number;
   last_failed_at: string | null;

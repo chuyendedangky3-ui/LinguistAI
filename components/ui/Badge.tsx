@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ViewStyle, TextStyle } from 'react-native';
+import { StyleSheet, Text, TextStyle, View, ViewStyle } from 'react-native';
 import { COLORS, LAYOUT } from '../../constants/theme';
 
 interface BadgeProps {
@@ -33,13 +33,13 @@ export const Badge: React.FC<BadgeProps> = ({ label, variant = 'primary', style,
 
 const styles = StyleSheet.create({
   base: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: LAYOUT.radiusXSmall,
     alignSelf: 'flex-start',
   },
   text: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 12,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
   },
 });

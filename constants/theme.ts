@@ -19,16 +19,16 @@ export const COLORS = {
 };
 
 export const LAYOUT = {
-  radiusLarge: 32,
-  radiusMedium: 16,
-  radiusSmall: 12,
-  radiusXSmall: 8,
+  radiusLarge: 20,
+  radiusMedium: 12,
+  radiusSmall: 8,
+  radiusXSmall: 6,
   spacing: (factor: number) => factor * 4,
   shadow: {
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
   },
 };

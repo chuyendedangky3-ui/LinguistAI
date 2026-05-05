@@ -1,12 +1,12 @@
-import { Flashcard, ApiKey, WordType } from '../types';
+import { Flashcard, ApiKey } from '../types';
 import * as db from './db';
 
 /**
- * Gemini AI Integration with API Key Rotation.
+ * Gemini AI Integration with API Key Rotation and Batch Processing.
  * Models: gemini-1.5-flash-latest
  */
 
-const MODEL_NAME = 'gemini-1.5-flash-latest';
+const MODEL_NAME = 'gemini-flash-latest';
 
 interface GeminiResponse {
   candidates: {
@@ -17,113 +17,277 @@ interface GeminiResponse {
 }
 
 /**
- * Strips markdown code blocks from a string.
+ * Strips markdown and extracts the JSON block from a string.
+ * Includes basic repair for truncated responses.
  */
 function cleanJsonResponse(text: string): string {
-  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  if (!text) return '{}';
+  try {
+    let cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    let start = cleaned.indexOf('{');
+    let end = cleaned.lastIndexOf('}');
+    
+    if (start !== -1) {
+      if (end !== -1 && end > start) {
+        cleaned = cleaned.substring(start, end + 1);
+      } else {
+        // Truncated JSON repair
+        cleaned = cleaned.substring(start);
+        if (cleaned.startsWith('{') && !cleaned.endsWith('}')) cleaned += '}]}'; 
+        else if (cleaned.startsWith('[') && !cleaned.endsWith(']')) cleaned += ']';
+      }
+      return cleaned;
+    }
+    return cleaned;
+  } catch (e) {
+    return text || '{}';
+  }
 }
 
 /**
- * Fetches an active API key from the database or environment.
+ * Fetches active API keys with smart recovery.
  */
 async function getNextApiKey(): Promise<ApiKey | { api_key: string; id: -1 }> {
   const keys = await db.getApiKeys();
   const activeKeys = keys.filter(k => k.is_active);
 
-  if (activeKeys.length > 0) {
-    return activeKeys[0];
+  if (activeKeys.length === 0) {
+    const envKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    if (!envKey) throw new Error('No Gemini API key available. Please add one in Settings.');
+    return { api_key: envKey, id: -1 };
   }
 
-  // Fallback to environment variable if no DB keys
-  const envKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-  if (!envKey) {
-    throw new Error('No Gemini API key available. Please add one in Settings.');
-  }
+  const ONE_HOUR = 60 * 60 * 1000;
+  const now = Date.now();
 
-  return { api_key: envKey, id: -1 };
+  const sortedKeys = [...activeKeys].sort((a, b) => {
+    const aLastFail = a.last_failed_at ? new Date(a.last_failed_at).getTime() : 0;
+    const bLastFail = b.last_failed_at ? new Date(b.last_failed_at).getTime() : 0;
+    const aIsRecentFail = (now - aLastFail) < ONE_HOUR;
+    const bIsRecentFail = (now - bLastFail) < ONE_HOUR;
+
+    if (!aIsRecentFail && bIsRecentFail) return -1;
+    if (aIsRecentFail && !bIsRecentFail) return 1;
+    return a.fail_count - b.fail_count;
+  });
+
+  return sortedKeys[0];
 }
 
 /**
- * Executes a prompt with automatic key rotation on failure.
+ * Executes a prompt with automatic key rotation and retry logic.
  */
-async function generateContent(prompt: string, attempt = 0): Promise<string> {
+async function generateContent(
+  prompt: string, 
+  imageData?: { mimeType: string, base64: string },
+  attempt = 0
+): Promise<string> {
   const keyObj = await getNextApiKey();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${keyObj.api_key}`;
+
+  const parts: any[] = [{ text: prompt }];
+  if (imageData) {
+    parts.push({
+      inline_data: {
+        mime_type: imageData.mimeType,
+        data: imageData.base64
+      }
+    });
+  }
 
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts }],
         generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 1024,
+          temperature: 0.2, // Lower temperature for more stable JSON
+          maxOutputTokens: 4096,
         },
       }),
     });
 
     if (!response.ok) {
-      if (response.status === 429 || response.status >= 500) {
-        // Rate limit or server error - record failure and rotate
-        if (keyObj.id !== -1) {
-          await db.recordApiKeyFailure(keyObj.id);
-        }
-        
-        if (attempt < 3) {
-          return await generateContent(prompt, attempt + 1);
-        }
+      if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+        if (keyObj.id !== -1) await db.recordApiKeyFailure(keyObj.id);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return await generateContent(prompt, imageData, attempt + 1);
       }
       throw new Error(`Gemini API Error: ${response.status}`);
     }
 
     const data: GeminiResponse = await response.json();
-    return data.candidates[0].content.parts[0].text;
-
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('AI returned an empty response.');
+    return text;
   } catch (error) {
-    if (attempt < 3) {
-      return await generateContent(prompt, attempt + 1);
-    }
+    if (attempt < 2) return await generateContent(prompt, imageData, attempt + 1);
     throw error;
   }
 }
 
-/**
- * Analyzes a word/phrase and returns structured flashcard data.
- */
-export async function analyzeWord(input: string): Promise<Partial<Flashcard>> {
-  const prompt = `
-    Analyze the English word or phrase: "${input}"
-    
-    Return a JSON object with these exact fields:
-    - english: the word/phrase as given
-    - vietnamese: Vietnamese translation
-    - phonetic: IPA pronunciation
-    - word_type: one of [noun, verb, adjective, adverb, phrase, idiom]
-    - grammar_note: a brief grammar tip in English (1 sentence max)
-    - example_en: a natural example sentence in English
-    - example_vi: the Vietnamese translation of that example sentence
-    
-    Return ONLY the JSON object. No explanation.
-  `;
+const WORD_TYPE_VALUES = 'noun | verb | adjective | adverb | phrase | idiom | conjunction | preposition | pronoun | other';
+
+// Detects if input is a single word/phrase or a longer paragraph
+function isSingleWordOrPhrase(text: string): boolean {
+  const trimmed = text.trim();
+  // Consider it a phrase if it has fewer than 5 words and no sentence-ending punctuation
+  const wordCount = trimmed.split(/\s+/).length;
+  const hasSentenceEnd = /[.!?]/.test(trimmed);
+  return wordCount <= 4 && !hasSentenceEnd;
+}
+
+const DECK_SUGGESTION_RULES = `
+Rules for "suggested_deck":
+1. Try your best to categorize the word into a specific thematic category (e.g., "Technology", "Work", "Emotions").
+2. First, check "Existing collections" below. If the word fits ANY of them, use that exact name.
+3. If no existing collection fits well, you may suggest a new specific category name.
+4. If the word is very general and does not fit any specific theme, you may use "Inbox".
+5. Keep category names concise (1-2 words). Avoid generic names like "Vocabulary" or "General".`;
+
+const SINGLE_WORD_PROMPT = (input: string, existingDecks?: string[]) => `
+You are a vocabulary flashcard creator.
+The user typed: "${input}"
+
+Rules:
+1. ONLY analyze this exact word/phrase. Do NOT add synonyms or related words.
+2. If there is a spelling or grammar mistake, fix it and use the corrected form as "english".
+3. Provide: Vietnamese translation, IPA phonetics, brief grammar note, and one example sentence.
+4. Word type: ${WORD_TYPE_VALUES}.
+5. ${DECK_SUGGESTION_RULES}
+
+${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
+
+Output ONLY this exact JSON (one card only):
+{
+  "flashcards": [
+    {
+      "english": "word",
+      "phonetic": "IPA",
+      "vietnamese": "translation",
+      "grammar_note": "note",
+      "example_en": "example",
+      "example_vi": "dịch",
+      "word_type": "noun",
+      "suggested_deck": "Specific Topic",
+      "is_new_deck": false
+    }
+  ]
+}`;
+
+const PARAGRAPH_PROMPT = (input: string, existingDecks?: string[]) => `
+You are a vocabulary flashcard creator.
+Analyze this text and extract the most important English words/phrases: "${input}"
+
+Rules:
+1. Extract up to 10 key vocabulary items worth learning.
+2. For each: Vietnamese translation, IPA phonetics, grammar note, and example.
+3. Word type: ${WORD_TYPE_VALUES}.
+4. ${DECK_SUGGESTION_RULES}
+
+${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
+
+Output ONLY valid JSON:
+{
+  "flashcards": [
+    {
+      "english": "word",
+      "phonetic": "IPA",
+      "vietnamese": "translation",
+      "grammar_note": "note",
+      "example_en": "example",
+      "example_vi": "dịch",
+      "word_type": "noun",
+      "suggested_deck": "Specific Topic",
+      "is_new_deck": false
+    }
+  ]
+}`;
+
+export async function analyzeInput(input: string, context?: string, existingDecks?: string[]) {
+  const prompt = isSingleWordOrPhrase(input)
+    ? SINGLE_WORD_PROMPT(input, existingDecks)
+    : PARAGRAPH_PROMPT(input, existingDecks);
 
   const raw = await generateContent(prompt);
-  const jsonStr = cleanJsonResponse(raw);
-  return JSON.parse(jsonStr);
+  try {
+    return JSON.parse(cleanJsonResponse(raw));
+  } catch (e) {
+    throw new Error("AI output was invalid. Please try a shorter text.");
+  }
+}
+
+export async function extractFromImage(base64: string, mimeType: string, existingDecks?: string[]) {
+  const prompt = `Identify vocabulary from this image.
+    Rules:
+    1. Extract all English words/phrases.
+    2. Provide translation, IPA, grammar notes, and examples.
+    3. ${DECK_SUGGESTION_RULES}
+    ${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
+    Output ONLY JSON in the "flashcards" array format.`;
+  const raw = await generateContent(prompt, { mimeType, base64 });
+  try {
+    return JSON.parse(cleanJsonResponse(raw));
+  } catch (e) {
+    throw new Error("Failed to scan image. Please take a clearer photo.");
+  }
+}
+
+export async function reanalyzeCard(english: string, context?: string): Promise<Partial<Flashcard>> {
+  const prompt = `Analyze "${english}". ${context ? `Context: "${context}".` : ''}
+    Output ONLY JSON: {"flashcards": [{"english": "...", "phonetic": "...", "vietnamese": "...", "grammar_note": "...", "example_en": "...", "example_vi": "...", "word_type": "..."}]}`;
+  const raw = await generateContent(prompt);
+  const res = JSON.parse(cleanJsonResponse(raw));
+  return res.flashcards[0];
 }
 
 /**
- * General tutor chat prompt.
+ * Validates and enriches import data (Smart Batch Processing)
  */
-export async function tutorChat(message: string, context?: string): Promise<string> {
-  const prompt = `
-    You are an English language tutor helping a Vietnamese learner.
-    Always respond in English. Keep explanations simple and practical.
-    When giving examples, also provide their Vietnamese translations.
-    
-    ${context ? `Context: ${context}` : ''}
-    User: ${message}
-  `;
+export async function validateAndEnrichImportData(
+  cards: any[],
+  onProgress?: (current: number, total: number) => void
+): Promise<{ enriched: any[]; issues: string[] }> {
+  const issues: string[] = [];
+  const enriched: any[] = [];
 
+  const complete = cards.filter(c => c.english && c.vietnamese && c.phonetic);
+  const needsEnrichment = cards.filter(c => c.english && (!c.vietnamese || !c.phonetic));
+  
+  enriched.push(...complete);
+  const total = needsEnrichment.length;
+  const BATCH_SIZE = 10;
+
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    const batch = needsEnrichment.slice(i, i + BATCH_SIZE);
+    onProgress?.(i, total);
+
+    try {
+      const batchText = batch.map(c => c.english).join(', ');
+      const resultObj = await analyzeInput(batchText);
+      
+      if (resultObj && resultObj.flashcards) {
+        batch.forEach(card => {
+          const ai = resultObj.flashcards.find((c: any) => c.english.toLowerCase() === card.english.toLowerCase());
+          if (ai) {
+            enriched.push({ ...card, ...ai });
+          } else {
+            enriched.push(card);
+            issues.push(`Skipped "${card.english}"`);
+          }
+        });
+      }
+    } catch (e) {
+      issues.push(`Failed batch at index ${i}`);
+      enriched.push(...batch);
+    }
+  }
+  onProgress?.(total, total);
+  return { enriched, issues };
+}
+
+export async function tutorChat(message: string, context?: string): Promise<string> {
+  const prompt = `You are an English tutor for Vietnamese. Use English. keep it simple. ${context ? `Context: ${context}` : ''} User: ${message}`;
   return await generateContent(prompt);
 }

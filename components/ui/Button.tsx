@@ -1,7 +1,7 @@
-import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, ViewStyle, TextStyle, ActivityIndicator } from 'react-native';
-import { COLORS, LAYOUT } from '../../constants/theme';
 import * as Haptics from 'expo-haptics';
+import React from 'react';
+import { ActivityIndicator, StyleSheet, Text, TextStyle, TouchableOpacity, ViewStyle } from 'react-native';
+import { COLORS, LAYOUT } from '../../constants/theme';
 
 interface ButtonProps {
   title: string;
@@ -84,20 +84,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: LAYOUT.radiusSmall,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  small: { paddingVertical: 8, paddingHorizontal: 12 },
-  large: { paddingVertical: 16, paddingHorizontal: 24 },
+  small: { paddingVertical: 6, paddingHorizontal: 10 },
+  large: { paddingVertical: 14, paddingHorizontal: 20 },
   primary: { backgroundColor: COLORS.primary },
   secondary: { backgroundColor: COLORS.primaryLight },
   danger: { backgroundColor: COLORS.danger },
   ghost: { backgroundColor: 'transparent' },
   disabled: { opacity: 0.5 },
   textBase: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 16,
-    marginLeft: 8,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 14,
+    marginLeft: 6,
   },
   textPrimary: { color: 'white' },
   textSecondary: { color: COLORS.primary },
