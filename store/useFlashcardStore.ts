@@ -1,273 +1,343 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
-import { Deck, Flashcard, ApiKey } from '../types';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { getAge, getTargetReps, isOverdue } from '../lib/algorithm';
 import * as db from '../lib/db';
-import { buildStudyQueue, getAge, getTargetReps, isOverdue } from '../lib/algorithm';
+import { ApiKey, Collection, Flashcard } from '../types';
 
 interface FlashcardState {
   // Data
-  decks: Deck[];
+  collections: Collection[];
   flashcards: Flashcard[];
   apiKeys: ApiKey[];
-  inboxDeckId: number | null;
+  inboxCollectionId: number | null;
 
-  // Intensive counters (for quick-action cards on home)
-  newCramCount: number;      // Age 0 cards with daily_reps < 3
-  focusReviewCount: number;  // Age 1-6 + milestone cards due
+  // Intensive counters
+  newCramCount: number;
+  newCramTotalCount: number;
+  focusReviewCount: number;
+  focusTotalCount: number;
 
   // Session State
   sessionQueue: Flashcard[];
   currentSessionIndex: number;
+  sessionMode: 'new' | 'review' | 'all' | null;
+  
+  // Exam State
+  examQueue: Flashcard[];
+  examIndex: number;
+  examResults: { remember: number; forget: number };
+  isExamActive: boolean;
 
   // Loading & Global State
   isLoading: boolean;
   isInitialized: boolean;
 
-  // Actions - Initialization
+  // Actions
   init: () => Promise<void>;
-  
-  // Active context
-  activeDeckId: number | null;
-  setActiveDeckId: (id: number | null) => void;
-
-  // Actions - Sync
+  activeCollectionId: number | null;
+  setActiveCollectionId: (id: number | null) => void;
   refresh: () => Promise<void>;
-
-  // Actions - Decks
-  loadDecks: () => Promise<void>;
-  addDeck: (name: string, icon: string) => Promise<void>;
-  editDeck: (id: number, name: string) => Promise<void>;
-  removeDeck: (id: number) => Promise<void>;
-  removeMultipleDecks: (ids: number[]) => Promise<void>;
-
-  // Actions - Flashcards
-  loadFlashcards: (deckId?: number) => Promise<void>;
-  searchFlashcards: (query: string) => Promise<(Flashcard & { deck_name: string })[]>;
+  loadCollections: () => Promise<void>;
+  addCollection: (name: string, icon: string) => Promise<number>;
+  editCollection: (id: number, name: string) => Promise<void>;
+  removeCollection: (id: number) => Promise<void>;
+  removeMultipleCollections: (ids: number[]) => Promise<void>;
+  loadFlashcards: (collectionId?: number) => Promise<void>;
+  searchFlashcards: (query: string) => Promise<(Flashcard & { collection_name: string })[]>;
   addFlashcard: (card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps' | 'created_at'>) => Promise<void>;
   addFlashcardsBulk: (cards: Array<Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps'>>) => Promise<void>;
   updateFlashcard: (card: Partial<Flashcard> & { id: number }) => Promise<void>;
   removeFlashcard: (id: number) => Promise<void>;
   removeMultipleFlashcards: (ids: number[]) => Promise<void>;
-  moveFlashcard: (id: number, targetDeckId: number) => Promise<void>;
-  moveMultipleFlashcards: (ids: number[], targetDeckId: number) => Promise<void>;
+  moveFlashcard: (id: number, targetCollectionId: number) => Promise<void>;
+  moveMultipleFlashcards: (ids: number[], targetCollectionId: number) => Promise<void>;
   findDuplicate: (english: string) => Promise<Flashcard | null>;
-
-  // Actions - Session
-  startSession: (deckId?: number, mode?: 'new' | 'review' | 'all') => void;
+  startSession: (collectionId?: number, mode?: 'new' | 'review' | 'all') => void;
   recordRep: (cardId: number, isSuccess: boolean) => Promise<void>;
   nextCard: () => void;
-
-  // Actions - API Keys
+  startExam: () => void;
+  recordExamRep: (isSuccess: boolean) => void;
+  resetExam: () => void;
   loadApiKeys: () => Promise<void>;
   addApiKey: (key: string) => Promise<void>;
   removeApiKey: (id: number) => Promise<void>;
   toggleApiKey: (id: number, isActive: boolean) => Promise<void>;
-
-  // Actions - Data
-  exportData: () => Promise<{ version: string; exportedAt: string; decks: Deck[]; cards: Flashcard[] }>;
-  importData: (decks: any[], cards: any[]) => Promise<void>;
+  exportData: () => Promise<any>;
+  importData: (collections: any[], cards: any[]) => Promise<void>;
 }
 
 function computeIntensiveCounts(flashcards: Flashcard[]) {
   const today = new Date();
   const dayOfWeek = today.getDay();
-
   let newCramCount = 0;
+  let newCramTotalCount = 0;
   let focusReviewCount = 0;
+  let focusTotalCount = 0;
 
   for (const card of flashcards) {
     const age = getAge(card.created_at);
     const target = getTargetReps(age, dayOfWeek);
-
-    if (age === 0) {
-      // New card: target 3 reps
-      if (card.daily_reps < 3) newCramCount++;
-    } else if (target > 0 && card.daily_reps < target) {
-      focusReviewCount++;
-    } else if (isOverdue(card, today)) {
+    if (age === 0 && target > 0) {
+      newCramTotalCount++;
+      if (card.daily_reps < target) newCramCount++;
+    } 
+    if (age > 0 && target > 0) {
+      focusTotalCount++;
+      if (card.daily_reps < target || isOverdue(card, today)) focusReviewCount++;
+    } else if (age > 0 && isOverdue(card, today)) {
+      focusTotalCount++;
       focusReviewCount++;
     }
   }
-
-  return { newCramCount, focusReviewCount };
+  return { newCramCount, newCramTotalCount, focusReviewCount, focusTotalCount };
 }
 
-export const useFlashcardStore = create<FlashcardState>((set, get) => ({
-  decks: [],
-  flashcards: [],
-  apiKeys: [],
-  inboxDeckId: null,
-  newCramCount: 0,
-  focusReviewCount: 0,
-  sessionQueue: [],
-  currentSessionIndex: 0,
-  isLoading: false,
-  isInitialized: false,
+export const useFlashcardStore = create<FlashcardState>()(
+  persist(
+    (set, get) => ({
+      collections: [],
+      flashcards: [],
+      apiKeys: [],
+      inboxCollectionId: null,
+      newCramCount: 0,
+      newCramTotalCount: 0,
+      focusReviewCount: 0,
+      focusTotalCount: 0,
+      sessionQueue: [],
+      currentSessionIndex: 0,
+      sessionMode: null,
+      examQueue: [],
+      examIndex: 0,
+      examResults: { remember: 0, forget: 0 },
+      isExamActive: false,
+      isLoading: false,
+      isInitialized: false,
+      activeCollectionId: null,
 
-  init: async () => {
-    if (get().isInitialized) return;
-    set({ isLoading: true });
-    await db.initDb();
-    const decks = await db.getAllDecks();
-    const flashcards = await db.getAllFlashcards();
-    const apiKeys = await db.getApiKeys();
-    const inboxIdStr = await db.getSetting('inbox_deck_id');
-    const inboxDeckId = inboxIdStr ? Number(inboxIdStr) : null;
-    const counts = computeIntensiveCounts(flashcards);
-    set({ decks, flashcards, apiKeys, inboxDeckId, ...counts, isLoading: false, isInitialized: true });
-  },
+      init: async () => {
+        if (get().isInitialized) return;
+        set({ isLoading: true });
+        await db.initDb();
+        const collections = await db.getAllCollections();
+        const flashcards = await db.getAllFlashcards();
+        const apiKeys = await db.getApiKeys();
+        const inboxIdStr = await db.getSetting('inbox_collection_id');
+        const inboxCollectionId = inboxIdStr ? Number(inboxIdStr) : null;
+        const counts = computeIntensiveCounts(flashcards);
+        set({ collections, flashcards, apiKeys, inboxCollectionId, ...counts, isLoading: false, isInitialized: true });
+      },
 
-  activeDeckId: null,
-  setActiveDeckId: (id) => set({ activeDeckId: id }),
+      setActiveCollectionId: (id) => set({ activeCollectionId: id }),
 
-  refresh: async () => {
-    const decks = await db.getAllDecks();
-    const flashcards = await db.getAllFlashcards();
-    const counts = computeIntensiveCounts(flashcards);
-    set({ decks, flashcards, ...counts });
-  },
+      refresh: async () => {
+        await db.resetDailyRepsIfNeeded();
+        const collections = await db.getAllCollections();
+        const flashcards = await db.getAllFlashcards();
+        const counts = computeIntensiveCounts(flashcards);
+        set({ collections, flashcards, ...counts });
+      },
 
-  loadDecks: async () => {
-    const decks = await db.getAllDecks();
-    set({ decks });
-  },
+      loadCollections: async () => {
+        const collections = await db.getAllCollections();
+        set({ collections });
+      },
 
-  addDeck: async (name, icon) => {
-    await db.createDeck(name, icon);
-    await get().refresh();
-  },
+      addCollection: async (name, icon) => {
+        const id = await db.createCollection(name, icon);
+        await get().refresh();
+        return id;
+      },
 
-  editDeck: async (id, name) => {
-    await db.updateDeck(id, name);
-    await get().loadDecks();
-  },
+      editCollection: async (id, name) => {
+        await db.updateCollection(id, name);
+        await get().loadCollections();
+      },
 
-  removeDeck: async (id) => {
-    await db.deleteDeck(id);
-    await get().refresh();
-  },
+      removeCollection: async (id) => {
+        await db.deleteCollection(id);
+        await get().refresh();
+      },
 
-  removeMultipleDecks: async (ids) => {
-    await db.deleteMultipleDecks(ids);
-    await get().refresh();
-  },
+      removeMultipleCollections: async (ids) => {
+        await db.deleteMultipleCollections(ids);
+        await get().refresh();
+      },
 
-  loadFlashcards: async (deckId) => {
-    const flashcards = deckId
-      ? await db.getFlashcardsByDeck(deckId)
-      : await db.getAllFlashcards();
-    const counts = computeIntensiveCounts(flashcards);
-    set({ flashcards, ...counts });
-  },
+      loadFlashcards: async (collectionId) => {
+        await db.resetDailyRepsIfNeeded();
+        const flashcards = collectionId
+          ? await db.getFlashcardsByCollection(collectionId)
+          : await db.getAllFlashcards();
+        const counts = computeIntensiveCounts(flashcards);
+        set({ flashcards, ...counts });
+      },
 
-  searchFlashcards: async (query) => {
-    return await db.searchFlashcards(query);
-  },
+      searchFlashcards: async (query) => {
+        return await db.searchFlashcards(query);
+      },
 
-  addFlashcard: async (cardData) => {
-    await db.createFlashcard(cardData);
-    await get().refresh();
-  },
+      addFlashcard: async (cardData) => {
+        await db.createFlashcard(cardData);
+        await get().refresh();
+      },
 
-  addFlashcardsBulk: async (cards) => {
-    await db.createFlashcardBulk(cards);
-    await get().refresh();
-  },
+      addFlashcardsBulk: async (cards) => {
+        await db.createFlashcardBulk(cards);
+        await get().refresh();
+      },
 
-  updateFlashcard: async (card) => {
-    await db.updateFlashcard(card);
-    const flashcards = await db.getAllFlashcards();
-    const counts = computeIntensiveCounts(flashcards);
-    set({ flashcards, ...counts });
-  },
+      updateFlashcard: async (card) => {
+        await db.updateFlashcard(card);
+        const flashcards = await db.getAllFlashcards();
+        const counts = computeIntensiveCounts(flashcards);
+        set({ flashcards: flashcards, ...counts });
+      },
 
-  removeFlashcard: async (id) => {
-    await db.deleteFlashcard(id);
-    await get().refresh();
-  },
+      removeFlashcard: async (id) => {
+        await db.deleteFlashcard(id);
+        await get().refresh();
+      },
 
-  removeMultipleFlashcards: async (ids) => {
-    await db.deleteMultipleFlashcards(ids);
-    await get().refresh();
-  },
+      removeMultipleFlashcards: async (ids) => {
+        await db.deleteMultipleFlashcards(ids);
+        await get().refresh();
+      },
 
-  moveFlashcard: async (id, targetDeckId) => {
-    await db.moveFlashcard(id, targetDeckId);
-    await get().refresh();
-  },
+      moveFlashcard: async (id, targetCollectionId) => {
+        await db.moveFlashcard(id, targetCollectionId);
+        await get().refresh();
+      },
 
-  moveMultipleFlashcards: async (ids, targetDeckId) => {
-    await db.moveMultipleFlashcards(ids, targetDeckId);
-    await get().refresh();
-  },
+      moveMultipleFlashcards: async (ids, targetCollectionId) => {
+        await db.moveMultipleFlashcards(ids, targetCollectionId);
+        await get().refresh();
+      },
 
-  findDuplicate: async (english) => {
-    return await db.findDuplicateFlashcard(english);
-  },
+      findDuplicate: async (english) => {
+        return await db.findDuplicateFlashcard(english);
+      },
 
-  startSession: (deckId, mode = 'review') => {
-    const { flashcards } = get();
-    const filtered = deckId
-      ? flashcards.filter(c => c.deck_id === deckId)
-      : flashcards;
+      startSession: (collectionId, mode = 'review') => {
+        const { flashcards } = get();
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        const filtered = collectionId ? flashcards.filter(c => c.collection_id === collectionId) : flashcards;
+        let queue: Flashcard[] = [];
+        if (mode === 'all') {
+          queue = [...filtered].sort(() => Math.random() - 0.5);
+        } else if (mode === 'new') {
+          const todayCards = filtered.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return age === 0 && target > 0;
+          });
+          const due = todayCards.filter(c => c.daily_reps < 3).sort(() => Math.random() - 0.5);
+          const done = todayCards.filter(c => c.daily_reps >= 3).sort(() => Math.random() - 0.5);
+          queue = [...due, ...done];
+        } else {
+          const eligible = filtered.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return (age > 0 && target > 0) || (age > 0 && isOverdue(c, now));
+          });
+          const due = eligible.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return c.daily_reps < target || isOverdue(c, now);
+          }).sort(() => Math.random() - 0.5);
+          const done = eligible.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return c.daily_reps >= target && !isOverdue(c, now);
+          }).sort(() => Math.random() - 0.5);
+          queue = [...due, ...done];
+        }
+        set({ sessionQueue: queue, currentSessionIndex: 0, sessionMode: mode });
+      },
 
-    let queue: Flashcard[];
-    if (mode === 'all') {
-      // Full review - all cards shuffled
-      queue = [...filtered].sort(() => Math.random() - 0.5);
-    } else if (mode === 'new') {
-      // Only age 0 cards
-      queue = filtered.filter(c => getAge(c.created_at) === 0);
-    } else {
-      queue = buildStudyQueue(filtered);
+      recordRep: async (cardId, isSuccess) => {
+        const { flashcards, sessionQueue, currentSessionIndex } = get();
+        const card = flashcards.find(c => c.id === cardId);
+        if (!card) return;
+        const newDailyReps = isSuccess ? card.daily_reps + 1 : card.daily_reps;
+        const newTotalReps = card.total_reps + 1;
+        await db.updateFlashcardRep(cardId, newDailyReps, newTotalReps);
+        if (!isSuccess) {
+          const sessionCard = sessionQueue[currentSessionIndex];
+          if (sessionCard) {
+            set(state => ({ sessionQueue: [...state.sessionQueue, sessionCard] }));
+          }
+        }
+        const updatedFlashcards = await db.getAllFlashcards();
+        const counts = computeIntensiveCounts(updatedFlashcards);
+        set({ flashcards: updatedFlashcards, ...counts });
+      },
+
+      nextCard: () => set(state => ({ currentSessionIndex: state.currentSessionIndex + 1 })),
+
+      startExam: () => {
+        const { flashcards } = get();
+        const studiedCards = flashcards.filter(c => c.total_reps > 0);
+        if (studiedCards.length === 0) return;
+        const shuffled = [...studiedCards].sort(() => Math.random() - 0.5);
+        set({ examQueue: shuffled, examIndex: 0, examResults: { remember: 0, forget: 0 }, isExamActive: true });
+      },
+
+      recordExamRep: (isSuccess) => {
+        set(state => ({
+          examIndex: state.examIndex + 1,
+          examResults: {
+            remember: isSuccess ? state.examResults.remember + 1 : state.examResults.remember,
+            forget: !isSuccess ? state.examResults.forget + 1 : state.examResults.forget,
+          }
+        }));
+      },
+
+      resetExam: () => {
+        set({ examQueue: [], examIndex: 0, examResults: { remember: 0, forget: 0 }, isExamActive: false });
+      },
+
+      loadApiKeys: async () => {
+        const apiKeys = await db.getApiKeys();
+        set({ apiKeys });
+      },
+
+      addApiKey: async (key) => {
+        await db.addApiKey(key);
+        await get().loadApiKeys();
+      },
+
+      removeApiKey: async (id) => {
+        await db.deleteApiKey(id);
+        await get().loadApiKeys();
+      },
+
+      toggleApiKey: async (id, isActive) => {
+        await db.updateApiKeyStatus(id, isActive);
+        await get().loadApiKeys();
+      },
+
+      exportData: async () => await db.exportAllData(),
+
+      importData: async (collections, cards) => {
+        await db.importBackupData(collections, cards);
+        await get().refresh();
+      },
+    }),
+    {
+      name: 'linguistai-storage',
+      storage: createJSONStorage(() => AsyncStorage),
+      partialize: (state) => ({
+        examQueue: state.examQueue,
+        examIndex: state.examIndex,
+        examResults: state.examResults,
+        isExamActive: state.isExamActive,
+        sessionQueue: state.sessionQueue,
+        currentSessionIndex: state.currentSessionIndex,
+        sessionMode: state.sessionMode,
+        inboxCollectionId: state.inboxCollectionId,
+      }),
     }
-
-    set({ sessionQueue: queue, currentSessionIndex: 0 });
-  },
-
-  recordRep: async (cardId, isSuccess) => {
-    const { flashcards } = get();
-    const card = flashcards.find(c => c.id === cardId);
-    if (!card) return;
-
-    const newDailyReps = isSuccess ? card.daily_reps + 1 : card.daily_reps;
-    const newTotalReps = card.total_reps + 1;
-    await db.updateFlashcardRep(cardId, newDailyReps, newTotalReps);
-
-    const updatedFlashcards = await db.getAllFlashcards();
-    const counts = computeIntensiveCounts(updatedFlashcards);
-    set({ flashcards: updatedFlashcards, ...counts });
-  },
-
-  nextCard: () => {
-    set(state => ({ currentSessionIndex: state.currentSessionIndex + 1 }));
-  },
-
-  loadApiKeys: async () => {
-    const apiKeys = await db.getApiKeys();
-    set({ apiKeys });
-  },
-
-  addApiKey: async (key) => {
-    await db.addApiKey(key);
-    await get().loadApiKeys();
-  },
-
-  removeApiKey: async (id) => {
-    await db.deleteApiKey(id);
-    await get().loadApiKeys();
-  },
-
-  toggleApiKey: async (id, isActive) => {
-    await db.updateApiKeyStatus(id, isActive);
-    await get().loadApiKeys();
-  },
-
-  exportData: async () => {
-    return await db.exportAllData();
-  },
-
-  importData: async (decks, cards) => {
-    await db.importBackupData(decks, cards);
-    await get().refresh();
-  },
-}));
+  )
+);

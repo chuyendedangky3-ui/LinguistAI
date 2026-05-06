@@ -1,4 +1,4 @@
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   Brain,
   Check,
@@ -36,19 +36,19 @@ import { reanalyzeCard } from '../../lib/gemini';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { Flashcard } from '../../types';
 
-export default function DeckDetailScreen() {
+export default function CollectionDetailScreen() {
   const { id, editId } = useLocalSearchParams<{ id: string, editId?: string }>();
   const router = useRouter();
   const {
-    decks, flashcards, inboxDeckId,
-    editDeck, removeDeck, updateFlashcard, removeFlashcard,
+    collections, flashcards, inboxCollectionId,
+    editCollection, removeCollection, updateFlashcard, removeFlashcard,
     removeMultipleFlashcards, moveFlashcard, moveMultipleFlashcards,
     refresh,
   } = useFlashcardStore();
 
-  const deckId = Number(id);
-  const deck = decks.find(d => d.id === deckId);
-  const cards = flashcards.filter(c => c.deck_id === deckId);
+  const collectionId = Number(id);
+  const collection = collections.find(d => d.id === collectionId);
+  const cards = flashcards.filter(c => c.collection_id === collectionId);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showMeanings, setShowMeanings] = useState(false);
@@ -72,9 +72,9 @@ export default function DeckDetailScreen() {
   const [moveSearch, setMoveSearch] = useState('');
   const [movingForMulti, setMovingForMulti] = useState(false);
 
-  // Edit deck modal
-  const [isDeckEditModalVisible, setIsDeckEditModalVisible] = useState(false);
-  const [deckNameEdit, setDeckNameEdit] = useState('');
+  // Edit collection modal
+  const [isCollectionEditModalVisible, setIsCollectionEditModalVisible] = useState(false);
+  const [collectionNameEdit, setCollectionNameEdit] = useState('');
 
   useFocusEffect(useCallback(() => { 
     refresh(); 
@@ -112,9 +112,9 @@ export default function DeckDetailScreen() {
     return { mastered, due, total: cards.length };
   }, [cards]);
 
-  const filteredMoveDecks = useMemo(() =>
-    decks.filter(d => d.name.toLowerCase().includes(moveSearch.toLowerCase())),
-    [decks, moveSearch]
+  const filteredMoveCollections = useMemo(() =>
+    collections.filter(d => d.name.toLowerCase().includes(moveSearch.toLowerCase())),
+    [collections, moveSearch]
   );
 
   const handleEditInit = (card: Flashcard) => {
@@ -148,24 +148,25 @@ export default function DeckDetailScreen() {
   };
 
   const handleDeleteCard = (card: Flashcard) => {
-    Alert.alert(
-      'Delete Card',
-      `What would you like to do with "${card.english}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Move to Inbox', 
-          onPress: async () => {
-            if (inboxDeckId) await moveFlashcard(card.id, inboxDeckId);
-          }
-        },
-        { 
-          text: 'Delete Permanently', 
-          style: 'destructive', 
-          onPress: () => removeFlashcard(card.id) 
-        },
-      ]
-    );
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+    
+    // Only show "Move to Inbox" if not already in Inbox
+    if (collectionId !== inboxCollectionId) {
+      options.push({ 
+        text: 'Move to Inbox', 
+        onPress: async () => {
+          if (inboxCollectionId) await moveFlashcard(card.id, inboxCollectionId);
+        }
+      });
+    }
+
+    options.push({ 
+      text: 'Delete Permanently', 
+      style: 'destructive', 
+      onPress: () => removeFlashcard(card.id) 
+    });
+
+    Alert.alert('Delete Card', `What would you like to do with "${card.english}"?`, options);
   };
 
   const handleMoveInit = (card: Flashcard) => {
@@ -181,12 +182,12 @@ export default function DeckDetailScreen() {
     setIsMoveModalVisible(true);
   };
 
-  const handleMoveToDeck = async (targetDeckId: number) => {
+  const handleMoveToCollection = async (targetCollectionId: number) => {
     if (movingForMulti) {
-      await moveMultipleFlashcards(Array.from(selectedCardIds), targetDeckId);
+      await moveMultipleFlashcards(Array.from(selectedCardIds), targetCollectionId);
       handleCancelMulti();
     } else if (selectedCard) {
-      await moveFlashcard(selectedCard.id, targetDeckId);
+      await moveFlashcard(selectedCard.id, targetCollectionId);
     }
     setIsMoveModalVisible(false);
   };
@@ -212,65 +213,65 @@ export default function DeckDetailScreen() {
 
   const handleDeleteMultiple = () => {
     if (selectedCardIds.size === 0) return;
-    Alert.alert(
-      'Bulk Delete',
-      `What would you like to do with ${selectedCardIds.size} selected cards?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Move to Inbox',
-          onPress: async () => {
-            if (inboxDeckId) {
-              await moveMultipleFlashcards(Array.from(selectedCardIds), inboxDeckId);
-              handleCancelMulti();
-            }
-          }
-        },
-        {
-          text: 'Delete Permanently',
-          style: 'destructive',
-          onPress: async () => {
-            await removeMultipleFlashcards(Array.from(selectedCardIds));
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+
+    if (collectionId !== inboxCollectionId) {
+      options.push({
+        text: 'Move to Inbox',
+        onPress: async () => {
+          if (inboxCollectionId) {
+            await moveMultipleFlashcards(Array.from(selectedCardIds), inboxCollectionId);
             handleCancelMulti();
           }
-        },
-      ]
-    );
+        }
+      });
+    }
+
+    options.push({
+      text: 'Delete Permanently',
+      style: 'destructive',
+      onPress: async () => {
+        await removeMultipleFlashcards(Array.from(selectedCardIds));
+        handleCancelMulti();
+      }
+    });
+
+    Alert.alert('Bulk Delete', `What would you like to do with ${selectedCardIds.size} selected cards?`, options);
   };
 
-  const handleDeleteDeck = () => {
-    if (!deck || deck.id === inboxDeckId) return;
-    Alert.alert('Delete Collection', `Delete "${deck.name}"? All cards will be moved to Inbox.`, [
+  const handleDeleteCollection = () => {
+    if (!collection || collection.id === inboxCollectionId) return;
+    Alert.alert('Delete Collection', `Delete "${collection.name}"? All cards will be moved to Inbox.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { await removeDeck(deckId); router.back(); } },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await removeCollection(collectionId); router.back(); } },
     ]);
   };
 
   const handleSingleDelete = (card: Flashcard) => {
-    Alert.alert(
-      'Delete Card',
-      `What would you like to do with "${card.english}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Move to Inbox',
-          onPress: async () => {
-            if (inboxDeckId) {
-              await moveFlashcard(card.id, inboxDeckId);
-              setDetailVisible(false);
-            }
-          }
-        },
-        { 
-          text: 'Delete Permanently', 
-          style: 'destructive', 
-          onPress: async () => {
-            await removeFlashcard(card.id);
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+
+    if (collectionId !== inboxCollectionId) {
+      options.push({
+        text: 'Move to Inbox',
+        onPress: async () => {
+          if (inboxCollectionId) {
+            await moveFlashcard(card.id, inboxCollectionId);
             setDetailVisible(false);
-          } 
-        },
-      ]
-    );
+          }
+        }
+      });
+    }
+
+    options.push({ 
+      text: 'Delete Permanently', 
+      style: 'destructive', 
+      onPress: async () => {
+        await removeFlashcard(card.id);
+        setDetailVisible(false);
+      } 
+    });
+
+    Alert.alert('Delete Card', `What would you like to do with "${card.english}"?`, options);
   };
 
   const handleEditCard = (card: Flashcard) => {
@@ -278,16 +279,17 @@ export default function DeckDetailScreen() {
     handleEditInit(card);
   };
 
-  const handleEditDeck = async () => {
-    if (!deckNameEdit.trim()) return;
-    await editDeck(deckId, deckNameEdit.trim());
-    setIsDeckEditModalVisible(false);
+  const handleEditCollection = async () => {
+    if (!collectionNameEdit.trim()) return;
+    await editCollection(collectionId, collectionNameEdit.trim());
+    setIsCollectionEditModalVisible(false);
   };
 
-  if (!deck) return null;
+  if (!collection) return null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <Stack.Screen options={{ headerShown: false }} />
       <WordDetailModal
         visible={detailVisible}
         word={selectedCard}
@@ -297,20 +299,26 @@ export default function DeckDetailScreen() {
       />
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <ChevronLeft size={22} color={COLORS.primary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle} numberOfLines={1}>{deck.name}</Text>
+        {isMultiSelectMode ? (
+          <TouchableOpacity onPress={handleCancelMulti} style={styles.cancelBtnHeader}>
+            <Text style={styles.cancelTextHeader}>Cancel</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+            <ChevronLeft size={22} color={COLORS.primary} />
+          </TouchableOpacity>
+        )}
+        <Text style={styles.headerTitle} numberOfLines={1}>{collection.name}</Text>
         <View style={{ flexDirection: 'row' }}>
-          {deck.id !== inboxDeckId && (
+          {collection.id !== inboxCollectionId && (
             <>
               <TouchableOpacity
                 style={styles.iconBtn}
-                onPress={() => { setDeckNameEdit(deck.name); setIsDeckEditModalVisible(true); }}
+                onPress={() => { setCollectionNameEdit(collection.name); setIsCollectionEditModalVisible(true); }}
               >
                 <Edit2 size={18} color={COLORS.textSecondary} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.iconBtn} onPress={handleDeleteDeck}>
+              <TouchableOpacity style={styles.iconBtn} onPress={handleDeleteCollection}>
                 <Trash2 size={18} color={COLORS.danger} />
               </TouchableOpacity>
             </>
@@ -329,13 +337,13 @@ export default function DeckDetailScreen() {
           <Text style={styles.statText}>Due: {stats.due}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <TouchableOpacity style={styles.studyBtn} onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(deckId) } })}>
+          <TouchableOpacity style={styles.studyBtn} onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(collectionId) } })}>
             <Play size={12} color="white" fill="white" />
             <Text style={styles.studyBtnText}>Learn Due</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.studyBtn, { backgroundColor: 'white', borderWidth: 1, borderColor: COLORS.border }]}
-            onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(deckId), mode: 'all' } })}
+            onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(collectionId), mode: 'all' } })}
           >
             <Brain size={12} color={COLORS.primary} />
             <Text style={[styles.studyBtnText, { color: COLORS.primary }]}>Full Review</Text>
@@ -439,11 +447,13 @@ export default function DeckDetailScreen() {
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* Multi-select bar */}
       {isMultiSelectMode && (
         <View style={styles.multiBar}>
-          <TouchableOpacity onPress={handleCancelMulti}><X size={20} color="white" /></TouchableOpacity>
-          <Text style={styles.multiBarText}>{selectedCardIds.size} cards</Text>
+          <TouchableOpacity onPress={handleCancelMulti} style={styles.multiBarCancel}>
+            <X size={20} color="white" />
+            <Text style={styles.multiBarBtnText}>Cancel</Text>
+          </TouchableOpacity>
+          <Text style={styles.multiBarText}>{selectedCardIds.size} selected</Text>
           <View style={{ flexDirection: 'row', gap: 16 }}>
             <TouchableOpacity onPress={handleMoveMultiInit}><Move size={18} color="white" /></TouchableOpacity>
             <TouchableOpacity onPress={handleDeleteMultiple}><Trash2 size={18} color="#ff4444" /></TouchableOpacity>
@@ -453,7 +463,13 @@ export default function DeckDetailScreen() {
 
       {/* FAB */}
       {!isMultiSelectMode && (
-        <TouchableOpacity style={styles.fab} onPress={() => router.push('/tutor')}>
+        <TouchableOpacity 
+          style={styles.fab} 
+          onPress={() => router.push({
+            pathname: '/tutor',
+            params: { collectionId: String(collectionId), collectionName: collection?.name }
+          })}
+        >
           <Plus size={28} color="white" />
         </TouchableOpacity>
       )}
@@ -508,15 +524,15 @@ export default function DeckDetailScreen() {
             </View>
             <TextInput
               style={[styles.textInput, { marginBottom: 12 }]}
-              placeholder="Search decks..."
+              placeholder="Search collections..."
               value={moveSearch}
               onChangeText={setMoveSearch}
               placeholderTextColor={COLORS.textMuted}
             />
             <ScrollView>
-              {filteredMoveDecks.map(d => (
-                <TouchableOpacity key={d.id} onPress={() => handleMoveToDeck(d.id)} style={styles.deckMoveRow}>
-                  <Text style={styles.deckMoveName}>{d.name}</Text>
+              {filteredMoveCollections.map(d => (
+                <TouchableOpacity key={d.id} onPress={() => handleMoveToCollection(d.id)} style={styles.collectionMoveRow}>
+                  <Text style={styles.collectionMoveName}>{d.name}</Text>
                   <ChevronRight size={18} color={COLORS.primary} />
                 </TouchableOpacity>
               ))}
@@ -525,22 +541,22 @@ export default function DeckDetailScreen() {
         </View>
       </Modal>
 
-      {/* Edit Deck Name Modal */}
-      <Modal visible={isDeckEditModalVisible} transparent animationType="fade" onRequestClose={() => setIsDeckEditModalVisible(false)}>
+      {/* Edit Collection Name Modal */}
+      <Modal visible={isCollectionEditModalVisible} transparent animationType="fade" onRequestClose={() => setIsCollectionEditModalVisible(false)}>
         <View style={[styles.modalOverlay, { justifyContent: 'center', paddingHorizontal: 24 }]}>
           <View style={[styles.modalSheet, { borderRadius: LAYOUT.radiusLarge }]}>
             <Text style={[styles.modalTitle, { marginBottom: 16 }]}>Edit Collection Name</Text>
             <TextInput
               style={[styles.textInput, { marginBottom: 16 }]}
-              value={deckNameEdit}
-              onChangeText={setDeckNameEdit}
+              value={collectionNameEdit}
+              onChangeText={setCollectionNameEdit}
               autoFocus
             />
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: COLORS.border }]} onPress={() => setIsDeckEditModalVisible(false)}>
+              <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: COLORS.border }]} onPress={() => setIsCollectionEditModalVisible(false)}>
                 <Text style={[styles.saveBtnText, { color: COLORS.textPrimary }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.saveBtn, { flex: 1 }]} onPress={handleEditDeck}>
+              <TouchableOpacity style={[styles.saveBtn, { flex: 1 }]} onPress={handleEditCollection}>
                 <Text style={styles.saveBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
@@ -562,6 +578,8 @@ const styles = StyleSheet.create({
     flex: 1, fontFamily: 'Outfit_700Bold', fontSize: 16,
     color: COLORS.textPrimary, textAlign: 'center', marginHorizontal: 12,
   },
+  cancelBtnHeader: { paddingVertical: 4, paddingHorizontal: 4 },
+  cancelTextHeader: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: COLORS.primary },
   iconBtn: { padding: 6, marginLeft: 2 },
   statsBar: {
     flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6,
@@ -618,6 +636,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
   },
   multiBarText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
+  multiBarCancel: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  multiBarBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
   fab: {
     position: 'absolute', right: 16, bottom: 16, width: 52, height: 52,
     borderRadius: 26, backgroundColor: COLORS.primary,
@@ -647,9 +667,9 @@ const styles = StyleSheet.create({
   },
   saveBtn: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 12, alignItems: 'center' },
   saveBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
-  deckMoveRow: {
+  collectionMoveRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingVertical: 12, borderTopWidth: 1, borderTopColor: COLORS.border,
   },
-  deckMoveName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
+  collectionMoveName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
 });

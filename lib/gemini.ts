@@ -22,26 +22,8 @@ interface GeminiResponse {
  */
 function cleanJsonResponse(text: string): string {
   if (!text) return '{}';
-  try {
-    let cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    let start = cleaned.indexOf('{');
-    let end = cleaned.lastIndexOf('}');
-    
-    if (start !== -1) {
-      if (end !== -1 && end > start) {
-        cleaned = cleaned.substring(start, end + 1);
-      } else {
-        // Truncated JSON repair
-        cleaned = cleaned.substring(start);
-        if (cleaned.startsWith('{') && !cleaned.endsWith('}')) cleaned += '}]}'; 
-        else if (cleaned.startsWith('[') && !cleaned.endsWith(']')) cleaned += ']';
-      }
-      return cleaned;
-    }
-    return cleaned;
-  } catch (e) {
-    return text || '{}';
-  }
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  return cleaned;
 }
 
 /**
@@ -78,7 +60,7 @@ async function getNextApiKey(): Promise<ApiKey | { api_key: string; id: -1 }> {
  * Executes a prompt with automatic key rotation and retry logic.
  */
 async function generateContent(
-  prompt: string, 
+  prompt: string,
   imageData?: { mimeType: string, base64: string },
   attempt = 0
 ): Promise<string> {
@@ -99,13 +81,7 @@ async function generateContent(
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          temperature: 0.2, // Lower temperature for more stable JSON
-          maxOutputTokens: 4096,
-        },
-      }),
+      body: JSON.stringify({ contents: [{ parts }] }),
     });
 
     if (!response.ok) {
@@ -132,33 +108,31 @@ const WORD_TYPE_VALUES = 'noun | verb | adjective | adverb | phrase | idiom | co
 // Detects if input is a single word/phrase or a longer paragraph
 function isSingleWordOrPhrase(text: string): boolean {
   const trimmed = text.trim();
-  // Consider it a phrase if it has fewer than 5 words and no sentence-ending punctuation
-  const wordCount = trimmed.split(/\s+/).length;
-  const hasSentenceEnd = /[.!?]/.test(trimmed);
-  return wordCount <= 4 && !hasSentenceEnd;
+  // If there are no sentence-ending punctuations, treat as a single phrase regardless of length
+  return !/[.!?]/.test(trimmed) || trimmed.split(/\s+/).length <= 8;
 }
 
-const DECK_SUGGESTION_RULES = `
-Rules for "suggested_deck":
+const COLLECTION_SUGGESTION_RULES = `
+Rules for "suggested_collection":
 1. Try your best to categorize the word into a specific thematic category (e.g., "Technology", "Work", "Emotions").
 2. First, check "Existing collections" below. If the word fits ANY of them, use that exact name.
 3. If no existing collection fits well, you may suggest a new specific category name.
-4. If the word is very general and does not fit any specific theme, you may use "Inbox".
+4. If the word is very general and does not fit any specific theme, use "Inbox".
 5. Keep category names concise (1-2 words). Avoid generic names like "Vocabulary" or "General".`;
 
-const SINGLE_WORD_PROMPT = (input: string, existingDecks?: string[]) => `
+const SINGLE_WORD_PROMPT = (input: string, existingCollections?: string[]) => `
 You are a vocabulary flashcard creator.
 The user typed: "${input}"
-
+ 
 Rules:
 1. ONLY analyze this exact word/phrase. Do NOT add synonyms or related words.
 2. If there is a spelling or grammar mistake, fix it and use the corrected form as "english".
 3. Provide: Vietnamese translation, IPA phonetics, brief grammar note, and one example sentence.
 4. Word type: ${WORD_TYPE_VALUES}.
-5. ${DECK_SUGGESTION_RULES}
-
-${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
-
+5. ${COLLECTION_SUGGESTION_RULES}
+ 
+${existingCollections?.length ? `Existing collections: ${existingCollections.map(d => `"${d}"`).join(', ')}.` : ''}
+ 
 Output ONLY this exact JSON (one card only):
 {
   "flashcards": [
@@ -170,24 +144,52 @@ Output ONLY this exact JSON (one card only):
       "example_en": "example",
       "example_vi": "dịch",
       "word_type": "noun",
-      "suggested_deck": "Specific Topic",
-      "is_new_deck": false
+      "suggested_collection": "Specific Topic"
     }
   ]
 }`;
 
-const PARAGRAPH_PROMPT = (input: string, existingDecks?: string[]) => `
+const LIST_PROMPT = (items: string[], existingCollections?: string[]) => `
+You are a vocabulary flashcard creator.
+Task: Create exactly one flashcard for EACH of the following items provided in the list:
+List: ${items.map((item, i) => `${i+1}. "${item.trim()}"`).join('\n')}
+ 
+Rules:
+1. DO NOT split these items further. Even if an item is a long phrase or sentence, treat it as ONE single card.
+2. For each: Vietnamese translation, IPA phonetics, grammar note, and example.
+3. Word type: ${WORD_TYPE_VALUES}.
+4. ${COLLECTION_SUGGESTION_RULES}
+ 
+${existingCollections?.length ? `Existing collections: ${existingCollections.map(d => `"${d}"`).join(', ')}.` : ''}
+ 
+Output ONLY valid JSON:
+{
+  "flashcards": [
+    {
+      "english": "the exact phrase from the list",
+      "phonetic": "IPA",
+      "vietnamese": "translation",
+      "grammar_note": "note",
+      "example_en": "example",
+      "example_vi": "dịch",
+      "word_type": "noun",
+      "suggested_collection": "Specific Topic"
+    }
+  ]
+} (Array must contain exactly ${items.length} items)`;
+
+const PARAGRAPH_PROMPT = (input: string, existingCollections?: string[]) => `
 You are a vocabulary flashcard creator.
 Analyze this text and extract the most important English words/phrases: "${input}"
-
+ 
 Rules:
 1. Extract up to 10 key vocabulary items worth learning.
 2. For each: Vietnamese translation, IPA phonetics, grammar note, and example.
 3. Word type: ${WORD_TYPE_VALUES}.
-4. ${DECK_SUGGESTION_RULES}
-
-${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
-
+4. ${COLLECTION_SUGGESTION_RULES}
+ 
+${existingCollections?.length ? `Existing collections: ${existingCollections.map(d => `"${d}"`).join(', ')}.` : ''}
+ 
 Output ONLY valid JSON:
 {
   "flashcards": [
@@ -199,16 +201,24 @@ Output ONLY valid JSON:
       "example_en": "example",
       "example_vi": "dịch",
       "word_type": "noun",
-      "suggested_deck": "Specific Topic",
-      "is_new_deck": false
+      "suggested_collection": "Specific Topic"
     }
   ]
 }`;
 
-export async function analyzeInput(input: string, context?: string, existingDecks?: string[]) {
-  const prompt = isSingleWordOrPhrase(input)
-    ? SINGLE_WORD_PROMPT(input, existingDecks)
-    : PARAGRAPH_PROMPT(input, existingDecks);
+export async function analyzeInput(input: string, context?: string, existingCollections?: string[]) {
+  const trimmedInput = input.trim();
+  let prompt = '';
+ 
+  if (trimmedInput.includes(';')) {
+    // Semicolon-separated list
+    const items = trimmedInput.split(';').filter(i => i.trim().length > 0);
+    prompt = LIST_PROMPT(items, existingCollections);
+  } else {
+    prompt = isSingleWordOrPhrase(trimmedInput)
+      ? SINGLE_WORD_PROMPT(trimmedInput, existingCollections)
+      : PARAGRAPH_PROMPT(trimmedInput, existingCollections);
+  }
 
   const raw = await generateContent(prompt);
   try {
@@ -218,14 +228,31 @@ export async function analyzeInput(input: string, context?: string, existingDeck
   }
 }
 
-export async function extractFromImage(base64: string, mimeType: string, existingDecks?: string[]) {
-  const prompt = `Identify vocabulary from this image.
-    Rules:
-    1. Extract all English words/phrases.
-    2. Provide translation, IPA, grammar notes, and examples.
-    3. ${DECK_SUGGESTION_RULES}
-    ${existingDecks?.length ? `Existing collections: ${existingDecks.map(d => `"${d}"`).join(', ')}.` : ''}
-    Output ONLY JSON in the "flashcards" array format.`;
+export async function extractFromImage(base64: string, mimeType: string, existingCollections?: string[]) {
+  const prompt = `This is a photo of a vocabulary list (printed table or handwriting). 
+Task:
+1. Identify all English words/phrases in the image.
+2. For each word: provide Vietnamese translation (prefer translation if visible in image), fix spelling, find IPA phonetics, provide grammar notes, and create usage examples.
+3. Determine word_type: ${WORD_TYPE_VALUES}.
+4. Suggest ONE suitable collection for EACH word.
+${existingCollections?.length ? `Existing collections: ${existingCollections.map(d => `"${d}"`).join(', ')}.` : ''}
+ 
+Output as a JSON object (NO extra explanation):
+{
+  "flashcards": [
+    {
+      "english": "English word",
+      "phonetic": "IPA phonetics",
+      "vietnamese": "Vietnamese translation",
+      "grammar_note": "brief note",
+      "example_en": "English example",
+      "example_vi": "Vietnamese translation of example",
+      "word_type": "noun",
+      "suggested_collection": "best matching category"
+    }
+  ]
+}`;
+
   const raw = await generateContent(prompt, { mimeType, base64 });
   try {
     return JSON.parse(cleanJsonResponse(raw));
@@ -254,7 +281,7 @@ export async function validateAndEnrichImportData(
 
   const complete = cards.filter(c => c.english && c.vietnamese && c.phonetic);
   const needsEnrichment = cards.filter(c => c.english && (!c.vietnamese || !c.phonetic));
-  
+
   enriched.push(...complete);
   const total = needsEnrichment.length;
   const BATCH_SIZE = 10;
@@ -266,7 +293,7 @@ export async function validateAndEnrichImportData(
     try {
       const batchText = batch.map(c => c.english).join(', ');
       const resultObj = await analyzeInput(batchText);
-      
+
       if (resultObj && resultObj.flashcards) {
         batch.forEach(card => {
           const ai = resultObj.flashcards.find((c: any) => c.english.toLowerCase() === card.english.toLowerCase());

@@ -84,7 +84,7 @@ Use haptic feedback for meaningful user interactions:
 |---|---|
 | Rating a card (Good / Hard) | `ImpactFeedbackStyle.Medium` |
 | Completing a study session | `NotificationFeedbackType.Success` |
-| Deleting a card or deck | `NotificationFeedbackType.Warning` |
+| Deleting a card or collection | `NotificationFeedbackType.Warning` |
 | Marking a card as skipped | `ImpactFeedbackStyle.Light` |
 
 ```ts
@@ -113,7 +113,7 @@ Use `hitSlop` on small icons if needed:
 
 Never show a blank screen while data is loading.
 Use a skeleton loader or spinner for:
-- Deck list loading
+- Collection list loading
 - Session initialization (calculating due cards)
 - AI response loading
 

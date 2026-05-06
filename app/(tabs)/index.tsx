@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ArrowUpDown,
@@ -7,9 +8,9 @@ import {
   ChevronRight,
   Edit2,
   FolderInput,
-  Inbox,
   Plus,
   Search,
+  Sparkles,
   Trash2,
   TrendingUp,
   X
@@ -18,7 +19,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -30,7 +33,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { WordDetailModal } from '../../components/flashcard/WordDetailModal';
 import { COLORS, LAYOUT } from '../../constants/theme';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
-import { Deck, Flashcard } from '../../types';
+import { Collection, Flashcard } from '../../types';
 
 type SortOption = 'name_asc' | 'name_desc' | 'newest' | 'oldest';
 
@@ -46,40 +49,60 @@ const ICON_OPTIONS = ['📚', '💼', '🌿', '🎯', '✈️', '🏠', '🎓', 
 export default function LibraryScreen() {
   const router = useRouter();
   const {
-    decks, flashcards, inboxDeckId,
-    newCramCount, focusReviewCount,
-    addDeck, editDeck, removeDeck, removeMultipleDecks,
-    refresh, searchFlashcards, setActiveDeckId, moveMultipleFlashcards
+    collections, flashcards, inboxCollectionId,
+    newCramCount, newCramTotalCount, focusReviewCount, focusTotalCount,
+    addCollection, editCollection, removeCollection, removeMultipleCollections,
+    refresh, searchFlashcards, setActiveCollectionId, moveMultipleFlashcards,
+    moveFlashcard, removeFlashcard, updateFlashcard
   } = useFlashcardStore();
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<(Flashcard & { deck_name: string })[]>([]);
+  const [searchResults, setSearchResults] = useState<(Flashcard & { collection_name: string })[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
   // Sort
   const [sortBy, setSortBy] = useState<SortOption>('newest');
   const [showSortMenu, setShowSortMenu] = useState(false);
 
-  // Multi-select decks
+  // Multi-select collections
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // Add/Edit deck modal
+  // Add/Edit collection modal
   const [addModalVisible, setAddModalVisible] = useState(false);
   const [editTarget, setEditTarget] = useState<{ id: number; name: string } | null>(null);
-  const [deckName, setDeckName] = useState('');
-  const [deckIcon, setDeckIcon] = useState('📚');
+  const [collectionName, setCollectionName] = useState('');
+  const [collectionIcon, setCollectionIcon] = useState('📚');
   const [saving, setSaving] = useState(false);
-
-  // Move decks (merge) modal
+ 
+  // Move collections (merge) modal
   const [isMoveModalVisible, setIsMoveModalVisible] = useState(false);
 
   // Word detail
   const [selectedCard, setSelectedCard] = useState<Flashcard | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editData, setEditData] = useState({
+    english: '', vietnamese: '', grammar_note: '', example_en: '', example_vi: '', phonetic: '', word_type: ''
+  });
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const navigation = useNavigation();
 
   useFocusEffect(useCallback(() => { refresh(); }, []));
+
+  // Clear search on double tab press
+  useEffect(() => {
+    const unsubscribe = (navigation as any).addListener('tabPress', (e: any) => {
+      if (navigation.isFocused()) {
+        setSearchQuery('');
+        setSearchResults([]);
+        setIsMultiSelectMode(false);
+      }
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   useEffect(() => {
     if (searchQuery.trim().length > 0) {
@@ -96,11 +119,11 @@ export default function LibraryScreen() {
     }
   }, [searchQuery]);
 
-  const inboxDeck = useMemo(() => decks.find(d => d.id === inboxDeckId) ?? null, [decks, inboxDeckId]);
-  const inboxCount = useMemo(() => flashcards.filter(c => c.deck_id === inboxDeckId).length, [flashcards, inboxDeckId]);
+  const inboxCollection = useMemo(() => collections.find(d => d.id === inboxCollectionId) ?? null, [collections, inboxCollectionId]);
+  const inboxCount = useMemo(() => flashcards.filter(c => c.collection_id === inboxCollectionId).length, [flashcards, inboxCollectionId]);
 
-  const filteredAndSortedDecks = useMemo(() => {
-    const filtered = decks.filter(d => d.id !== inboxDeckId && d.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const filteredAndSortedCollections = useMemo(() => {
+    const filtered = collections.filter(d => d.id !== inboxCollectionId && d.name.toLowerCase().includes(searchQuery.toLowerCase()));
     return filtered.sort((a, b) => {
       switch (sortBy) {
         case 'name_asc': return a.name.localeCompare(b.name);
@@ -110,30 +133,30 @@ export default function LibraryScreen() {
         default: return 0;
       }
     });
-  }, [decks, searchQuery, sortBy, inboxDeckId]);
+  }, [collections, searchQuery, sortBy, inboxCollectionId]);
 
   const handleOpenAdd = () => {
     setEditTarget(null);
-    setDeckName('');
-    setDeckIcon('📚');
+    setCollectionName('');
+    setCollectionIcon('📚');
+    setAddModalVisible(true);
+  };
+ 
+  const handleOpenEdit = (collection: Collection) => {
+    setEditTarget({ id: collection.id, name: collection.name });
+    setCollectionName(collection.name);
+    setCollectionIcon(collection.icon || '📚');
     setAddModalVisible(true);
   };
 
-  const handleOpenEdit = (deck: Deck) => {
-    setEditTarget({ id: deck.id, name: deck.name });
-    setDeckName(deck.name);
-    setDeckIcon(deck.icon || '📚');
-    setAddModalVisible(true);
-  };
-
-  const handleSaveDeck = async () => {
-    if (!deckName.trim() || saving) return;
+  const handleSaveCollection = async () => {
+    if (!collectionName.trim() || saving) return;
     setSaving(true);
     try {
       if (editTarget) {
-        await editDeck(editTarget.id, deckName.trim());
+        await editCollection(editTarget.id, collectionName.trim());
       } else {
-        await addDeck(deckName.trim(), deckIcon);
+        await addCollection(collectionName.trim(), collectionIcon);
       }
       setAddModalVisible(false);
     } catch (e: any) {
@@ -143,18 +166,18 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleDeleteDeck = (deck: Deck) => {
-    Alert.alert('Delete Collection', `Delete "${deck.name}"? All cards will be moved to Inbox.`, [
+  const handleDeleteCollection = (collection: Collection) => {
+    Alert.alert('Delete Collection', `Delete "${collection.name}"? All cards will be moved to Inbox.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => removeDeck(deck.id) },
+      { text: 'Delete', style: 'destructive', onPress: () => removeCollection(collection.id) },
     ]);
   };
 
-  const handleDeckPress = (id: number) => {
+  const handleCollectionPress = (id: number) => {
     if (isMultiSelectMode) {
       toggleSelect(id);
     } else {
-      setActiveDeckId(id);
+      setActiveCollectionId(id);
       router.push('/review');
     }
   };
@@ -168,7 +191,7 @@ export default function LibraryScreen() {
   };
 
   const handleSelectAll = () => {
-    const selectableIds = filteredAndSortedDecks.map(d => d.id);
+    const selectableIds = filteredAndSortedCollections.map(d => d.id);
     if (selectedIds.size === selectableIds.length) {
       setSelectedIds(new Set());
     } else {
@@ -188,44 +211,102 @@ export default function LibraryScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          await removeMultipleDecks(Array.from(selectedIds));
+          await removeMultipleCollections(Array.from(selectedIds));
           handleCancelMulti();
         },
       },
     ]);
   };
 
-  const handleMoveMultipleDecks = (targetDeckId: number) => {
-    const sourceDeckIds = Array.from(selectedIds);
-    // Find all cards in selected decks
-    const cardsToMove = flashcards.filter(c => sourceDeckIds.includes(c.deck_id));
+  const handleMoveMultipleCollections = (targetCollectionId: number) => {
+    const sourceCollectionIds = Array.from(selectedIds);
+    // Find all cards in selected collections
+    const cardsToMove = flashcards.filter(c => sourceCollectionIds.includes(c.collection_id));
     if (cardsToMove.length > 0) {
-      moveMultipleFlashcards(cardsToMove.map(c => c.id), targetDeckId);
+      moveMultipleFlashcards(cardsToMove.map(c => c.id), targetCollectionId);
       Alert.alert('Success', `Moved ${cardsToMove.length} words to target collection.`);
     }
     setIsMoveModalVisible(false);
     handleCancelMulti();
   };
 
-  const getDeckWordCount = (deckId: number) =>
-    flashcards.filter(c => c.deck_id === deckId).length;
+  const getCollectionWordCount = (collectionId: number) =>
+    flashcards.filter(c => c.collection_id === collectionId).length;
+
+  const handleEditInit = (card: Flashcard) => {
+    setSelectedCard(card);
+    setEditData({
+      english: card.english, vietnamese: card.vietnamese,
+      grammar_note: card.grammar_note || '', example_en: card.example_en || '',
+      example_vi: card.example_vi || '', phonetic: card.phonetic || '',
+      word_type: card.word_type || ''
+    });
+    setIsEditModalVisible(true);
+  };
 
   const handleEditCard = (card: Flashcard) => {
     setDetailVisible(false);
-    router.push({
-      pathname: '/deck/[id]',
-      params: { id: card.deck_id, editId: card.id }
+    handleEditInit(card);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedCard) return;
+    await updateFlashcard({ id: selectedCard.id, ...editData } as any);
+    setIsEditModalVisible(false);
+    refresh();
+  };
+
+  const handleAiReanalyze = async () => {
+    if (!editData.english.trim()) return;
+    setAiLoading(true);
+    try {
+      const { reanalyzeCard } = await import('../../lib/gemini');
+      const result = await reanalyzeCard(editData.english);
+      setEditData(prev => ({ ...prev, ...result }));
+    } catch (e: any) {
+      Alert.alert('AI Error', e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleSingleDelete = (card: Flashcard) => {
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+
+    // Only show "Move to Inbox" if NOT already in Inbox
+    if (card.collection_id !== inboxCollectionId) {
+      options.push({
+        text: 'Move to Inbox',
+        onPress: async () => {
+          if (inboxCollectionId) {
+            await moveFlashcard(card.id, inboxCollectionId);
+            setDetailVisible(false);
+          }
+        }
+      });
+    }
+
+    options.push({ 
+      text: 'Delete Permanently', 
+      style: 'destructive', 
+      onPress: async () => {
+        await removeFlashcard(card.id);
+        setDetailVisible(false);
+      } 
     });
+
+    Alert.alert('Delete Card', `What would you like to do with "${card.english}"?`, options);
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>Your Library</Text>
+        <Text style={styles.title}>Library</Text>
+        
         {isMultiSelectMode && (
           <TouchableOpacity onPress={handleSelectAll} style={styles.selectAllBtn}>
             <Text style={styles.selectAllText}>
-              {selectedIds.size === filteredAndSortedDecks.length ? 'Deselect' : 'Select All'}
+              {selectedIds.size === filteredAndSortedCollections.length ? 'Deselect' : 'Select All'}
             </Text>
           </TouchableOpacity>
         )}
@@ -255,20 +336,20 @@ export default function LibraryScreen() {
               {isSearching && <ActivityIndicator size="small" color={COLORS.primary} />}
             </View>
 
-            {filteredAndSortedDecks.length > 0 && (
+            {filteredAndSortedCollections.length > 0 && (
               <View style={{ marginBottom: 16 }}>
                 <Text style={styles.subLabel}>MATCHING COLLECTIONS</Text>
-                {filteredAndSortedDecks.map(deck => (
+                {filteredAndSortedCollections.map(collection => (
                   <TouchableOpacity
-                    key={deck.id}
+                    key={collection.id}
                     onPress={() => {
-                      setActiveDeckId(deck.id);
+                      setActiveCollectionId(collection.id);
                       router.push('/review');
                     }}
-                    style={styles.searchDeckRow}
+                    style={styles.searchCollectionRow}
                   >
                     <BookOpen size={18} color={COLORS.primary} />
-                    <Text style={styles.searchDeckName}>{deck.name}</Text>
+                    <Text style={styles.searchCollectionName}>{collection.name}</Text>
                     <ChevronRight size={16} color={COLORS.primary} />
                   </TouchableOpacity>
                 ))}
@@ -291,11 +372,11 @@ export default function LibraryScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.searchCardEn}>{card.english}</Text>
                       <Text style={styles.searchCardVi}>{card.vietnamese}</Text>
-                      <Text style={styles.searchCardDeck}>{card.deck_name}</Text>
+                      <Text style={styles.searchCardCollection}>{card.collection_name}</Text>
                     </View>
                     <TouchableOpacity 
                       onPress={() => {
-                        setActiveDeckId(card.deck_id);
+                        setActiveCollectionId(card.collection_id);
                         router.push({ pathname: '/review', params: { editId: card.id } });
                       }}
                       style={styles.redirectBtn}
@@ -309,16 +390,35 @@ export default function LibraryScreen() {
           </View>
         ) : (
           <>
+            {inboxCollection && (
+              <TouchableOpacity
+                style={styles.inboxRow}
+                onPress={() => {
+                  setActiveCollectionId(inboxCollection.id);
+                  router.push('/review');
+                }}
+                activeOpacity={0.85}
+              >
+                <View style={styles.inboxIconBox}>
+                  <Text style={styles.collectionEmoji}>{inboxCollection.icon || '📥'}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inboxTitle}>Uncategorized (Inbox)</Text>
+                  <Text style={styles.inboxSubtitle}>{inboxCount} {inboxCount === 1 ? 'card' : 'cards'} waiting</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
             <View style={styles.row}>
               <TouchableOpacity
                 style={[styles.actionCard, { backgroundColor: COLORS.primary }]}
-                onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'new' } })}
+                onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'new', mode: 'new' } })}
                 activeOpacity={0.85}
               >
                 <Brain size={22} color="white" />
                 <View style={styles.actionTextWrap}>
                   <Text style={styles.actionLabel}>Cram New</Text>
-                  <Text style={styles.actionValue}>{newCramCount} today</Text>
+                  <Text style={styles.actionValue}>{newCramTotalCount - newCramCount}/{newCramTotalCount} today</Text>
                 </View>
               </TouchableOpacity>
 
@@ -330,32 +430,13 @@ export default function LibraryScreen() {
                 <TrendingUp size={22} color="white" />
                 <View style={styles.actionTextWrap}>
                   <Text style={styles.actionLabel}>Focus Review</Text>
-                  <Text style={styles.actionValue}>{focusReviewCount} active</Text>
+                  <Text style={styles.actionValue}>{focusTotalCount - focusReviewCount}/{focusTotalCount} today</Text>
                 </View>
               </TouchableOpacity>
             </View>
 
-            {inboxDeck && (
-              <TouchableOpacity
-                style={styles.inboxRow}
-                onPress={() => {
-                  setActiveDeckId(inboxDeck.id);
-                  router.push('/review');
-                }}
-                activeOpacity={0.85}
-              >
-                <View style={styles.inboxIconBox}>
-                  <Inbox size={20} color="#E87722" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.inboxTitle}>Inbox</Text>
-                  <Text style={styles.inboxSubtitle}>{inboxCount} {inboxCount === 1 ? 'card' : 'cards'} waiting</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-
-            <View style={styles.collectionHeader}>
-              <Text style={styles.collectionLabel}>COLLECTIONS ({filteredAndSortedDecks.length})</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.subLabel}>COLLECTIONS ({filteredAndSortedCollections.length})</Text>
               <TouchableOpacity onPress={() => setShowSortMenu(v => !v)}>
                 <ArrowUpDown size={16} color={COLORS.textSecondary} />
               </TouchableOpacity>
@@ -377,41 +458,41 @@ export default function LibraryScreen() {
               </View>
             )}
 
-            {filteredAndSortedDecks.map(deck => (
+            {filteredAndSortedCollections.map(collection => (
               <TouchableOpacity
-                key={deck.id}
+                key={collection.id}
                 delayLongPress={300}
                 onLongPress={() => {
                   if (!isMultiSelectMode) {
                     setIsMultiSelectMode(true);
-                    setSelectedIds(new Set([deck.id]));
+                    setSelectedIds(new Set([collection.id]));
                   }
                 }}
-                onPress={() => handleDeckPress(deck.id)}
+                onPress={() => handleCollectionPress(collection.id)}
                 activeOpacity={0.9}
                 style={[
-                  styles.deckCard,
-                  isMultiSelectMode && selectedIds.has(deck.id) && styles.deckCardSelected
+                  styles.collectionCard,
+                  isMultiSelectMode && selectedIds.has(collection.id) && styles.collectionCardSelected
                 ]}
               >
                 {isMultiSelectMode && (
-                  <View style={[styles.checkbox, selectedIds.has(deck.id) && styles.checkboxChecked]}>
-                    {selectedIds.has(deck.id) && <Check size={10} color="white" />}
+                  <View style={[styles.checkbox, selectedIds.has(collection.id) && styles.checkboxChecked]}>
+                    {selectedIds.has(collection.id) && <Check size={10} color="white" />}
                   </View>
                 )}
-                <View style={styles.deckIconBox}>
-                  <Text style={styles.deckEmoji}>{deck.icon || '📚'}</Text>
+                <View style={styles.collectionIconBox}>
+                  <Text style={styles.collectionEmoji}>{collection.icon || '📚'}</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.deckName} numberOfLines={1}>{deck.name}</Text>
-                  <Text style={styles.deckCount}>{getDeckWordCount(deck.id)} words</Text>
+                  <Text style={styles.collectionName} numberOfLines={1}>{collection.name}</Text>
+                  <Text style={styles.collectionCount}>{getCollectionWordCount(collection.id)} words</Text>
                 </View>
                 {!isMultiSelectMode && (
-                  <View style={styles.deckActions}>
-                    <TouchableOpacity onPress={() => handleOpenEdit(deck)} style={styles.iconBtn}>
+                  <View style={styles.collectionActions}>
+                    <TouchableOpacity onPress={() => handleOpenEdit(collection)} style={styles.iconBtn}>
                       <Edit2 size={16} color={COLORS.textSecondary} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => handleDeleteDeck(deck)} style={styles.iconBtn}>
+                    <TouchableOpacity onPress={() => handleDeleteCollection(collection)} style={styles.iconBtn}>
                       <Trash2 size={16} color={COLORS.danger} />
                     </TouchableOpacity>
                   </View>
@@ -425,9 +506,14 @@ export default function LibraryScreen() {
 
       {isMultiSelectMode && (
         <View style={styles.multiBar}>
+          <TouchableOpacity style={styles.multiBarBtn} onPress={handleCancelMulti}>
+            <X size={20} color="white" />
+            <Text style={styles.multiBarBtnText}>Cancel</Text>
+          </TouchableOpacity>
+          <View style={styles.multiDivider} />
           <TouchableOpacity style={styles.multiBarBtn} onPress={() => setIsMoveModalVisible(true)}>
             <FolderInput size={20} color="white" />
-            <Text style={styles.multiBarBtnText}>Merge Cards</Text>
+            <Text style={styles.multiBarBtnText}>Merge</Text>
           </TouchableOpacity>
           <View style={styles.multiDivider} />
           <TouchableOpacity style={styles.multiBarBtn} onPress={handleDeleteMultiple}>
@@ -452,8 +538,8 @@ export default function LibraryScreen() {
               style={styles.modalInput}
               placeholder="e.g. TOEIC Vocabulary"
               placeholderTextColor={COLORS.textMuted}
-              value={deckName}
-              onChangeText={setDeckName}
+              value={collectionName}
+              onChangeText={setCollectionName}
               autoFocus
               maxLength={40}
             />
@@ -464,8 +550,8 @@ export default function LibraryScreen() {
                   {ICON_OPTIONS.map(emoji => (
                     <TouchableOpacity
                       key={emoji}
-                      style={[styles.iconOption, deckIcon === emoji && styles.iconOptionSelected]}
-                      onPress={() => setDeckIcon(emoji)}
+                      style={[styles.iconOption, collectionIcon === emoji && styles.iconOptionSelected]}
+                      onPress={() => setCollectionIcon(emoji)}
                     >
                       <Text style={{ fontSize: 24 }}>{emoji}</Text>
                     </TouchableOpacity>
@@ -474,9 +560,9 @@ export default function LibraryScreen() {
               </>
             )}
             <TouchableOpacity
-              style={[styles.saveBtn, (!deckName.trim() || saving) && styles.saveBtnDisabled]}
-              onPress={handleSaveDeck}
-              disabled={!deckName.trim() || saving}
+              style={[styles.saveBtn, (!collectionName.trim() || saving) && styles.saveBtnDisabled]}
+              onPress={handleSaveCollection}
+              disabled={!collectionName.trim() || saving}
             >
               <Text style={styles.saveBtnText}>
                 {saving ? 'Saving...' : editTarget ? 'Save Changes' : 'Create Collection'}
@@ -493,15 +579,15 @@ export default function LibraryScreen() {
             <Text style={styles.modalTitle}>Merge into Collection</Text>
             <Text style={styles.modalSubtitle}>All words from selected collections will be moved here.</Text>
             <ScrollView style={{ maxHeight: 300 }}>
-              {decks.map(d => (
+              {collections.map(d => (
                 <TouchableOpacity 
                   key={d.id} 
-                  style={[styles.deckSelectRow, selectedIds.has(d.id) && styles.deckSelectRowDisabled]} 
+                  style={[styles.collectionSelectRow, selectedIds.has(d.id) && styles.collectionSelectRowDisabled]} 
                   disabled={selectedIds.has(d.id)}
-                  onPress={() => handleMoveMultipleDecks(d.id)}
+                  onPress={() => handleMoveMultipleCollections(d.id)}
                 >
-                  <Text style={styles.deckEmoji}>{d.icon || '📚'}</Text>
-                  <Text style={styles.deckSelectName}>{d.name}</Text>
+                  <Text style={styles.collectionEmoji}>{d.icon || '📚'}</Text>
+                  <Text style={styles.collectionSelectName}>{d.name}</Text>
                   <ChevronRight size={16} color={COLORS.border} />
                 </TouchableOpacity>
               ))}
@@ -518,7 +604,47 @@ export default function LibraryScreen() {
         word={selectedCard}
         onClose={() => setDetailVisible(false)}
         onEdit={handleEditCard}
+        onDelete={handleSingleDelete}
       />
+
+      {/* Edit Card Modal */}
+      <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
+        <View style={styles.modalOverlayEdit}>
+          <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={styles.modalSheetEdit}>
+              <View style={styles.modalHeaderEdit}>
+                <Text style={styles.modalTitleEdit}>Edit Card</Text>
+                <TouchableOpacity
+                  onPress={handleAiReanalyze}
+                  disabled={aiLoading}
+                  style={styles.aiBadge}
+                >
+                  {aiLoading ? <ActivityIndicator size={12} color={COLORS.primary} /> : <Sparkles size={12} color={COLORS.primary} />}
+                  <Text style={styles.aiText}>AI Fix</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {(['english', 'vietnamese', 'phonetic', 'word_type', 'grammar_note', 'example_en', 'example_vi'] as const).map(field => (
+                  <View key={field} style={{ marginBottom: 12 }}>
+                    <Text style={styles.inputLabelEdit}>{field.replace('_', ' ').toUpperCase()}</Text>
+                    <TextInput
+                      style={[styles.textInput, ['grammar_note', 'example_en', 'example_vi'].includes(field) && { minHeight: 60 }]}
+                      value={(editData as any)[field]}
+                      onChangeText={v => setEditData(p => ({ ...p, [field]: v }))}
+                      multiline={['grammar_note', 'example_en', 'example_vi'].includes(field)}
+                    />
+                  </View>
+                ))}
+                <TouchableOpacity style={styles.saveBtnEdit} onPress={handleSaveEdit}>
+                  <Text style={styles.saveBtnTextEdit}>Save Changes</Text>
+                </TouchableOpacity>
+                <View style={{ height: 20 }} />
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -559,37 +685,21 @@ const styles = StyleSheet.create({
   },
   inboxTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: '#CC5A00' },
   inboxSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#E87722', marginTop: 1 },
-  collectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  collectionLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, letterSpacing: 1.1, color: COLORS.textMuted },
+  section: { marginTop: 8 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  sectionTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20, color: COLORS.textPrimary },
+  subLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, letterSpacing: 1.1, color: COLORS.textMuted, marginBottom: 8, marginTop: 4 },
   sortMenu: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
   sortChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 16, backgroundColor: 'white', borderWidth: 1, borderColor: COLORS.border },
   sortChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   sortChipText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: COLORS.textSecondary },
   sortChipTextActive: { color: 'white' },
-  deckCard: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
-    borderRadius: LAYOUT.radiusMedium, paddingVertical: 10, paddingHorizontal: 12,
-    marginBottom: 8, ...LAYOUT.shadow, borderWidth: 1.5, borderColor: 'transparent'
-  },
-  deckCardSelected: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight },
-  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: COLORS.border, marginRight: 10, alignItems: 'center', justifyContent: 'center' },
-  checkboxChecked: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  deckIconBox: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  deckEmoji: { fontSize: 20 },
-  deckName: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
-  deckCount: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
-  deckActions: { flexDirection: 'row' },
-  iconBtn: { padding: 4, marginLeft: 2 },
-  section: { marginBottom: 16 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sectionTitle: { fontFamily: 'Outfit_700Bold', fontSize: 16, color: COLORS.textPrimary },
-  subLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, letterSpacing: 1.2, color: COLORS.textMuted, marginBottom: 6 },
-  searchDeckRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight, borderRadius: LAYOUT.radiusSmall, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },
-  searchDeckName: { flex: 1, fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary, marginLeft: 10 },
+  searchCollectionRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight, borderRadius: LAYOUT.radiusSmall, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },
+  searchCollectionName: { flex: 1, fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary, marginLeft: 10 },
   searchCardRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', borderRadius: LAYOUT.radiusSmall, padding: 12, marginBottom: 6, ...LAYOUT.shadow },
   searchCardEn: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
   searchCardVi: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
-  searchCardDeck: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.primary, marginTop: 3, letterSpacing: 0.4 },
+  searchCardCollection: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.primary, marginTop: 3, letterSpacing: 0.4 },
   redirectBtn: { padding: 6, marginLeft: 4, borderRadius: 16, backgroundColor: COLORS.primaryLight },
   emptyText: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.textMuted, textAlign: 'center', paddingVertical: 32 },
   emptyContainer: { alignItems: 'center', paddingVertical: 48 },
@@ -616,9 +726,34 @@ const styles = StyleSheet.create({
   saveBtnDisabled: { opacity: 0.45 },
   saveBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 17, color: 'white' },
   
-  deckSelectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  deckSelectRowDisabled: { opacity: 0.3 },
-  deckSelectName: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 16, color: COLORS.textPrimary, marginLeft: 12 },
+  collectionCard: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
+    borderRadius: LAYOUT.radiusMedium, paddingVertical: 10, paddingHorizontal: 12,
+    marginBottom: 8, ...LAYOUT.shadow, borderWidth: 1.5, borderColor: 'transparent'
+  },
+  collectionCardSelected: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight },
+  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: COLORS.border, marginRight: 10, alignItems: 'center', justifyContent: 'center' },
+  checkboxChecked: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  collectionIconBox: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  collectionEmoji: { fontSize: 20 },
+  collectionName: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
+  collectionCount: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
+  collectionActions: { flexDirection: 'row' },
+  iconBtn: { padding: 4, marginLeft: 2 },
+  collectionSelectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  collectionSelectRowDisabled: { opacity: 0.3 },
+  collectionSelectName: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 16, color: COLORS.textPrimary, marginLeft: 12 },
   closeBtn: { marginTop: 20, paddingVertical: 14, alignItems: 'center', borderRadius: 12, backgroundColor: COLORS.background },
   closeBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.textSecondary },
+  // Edit Modal Styles
+  modalOverlayEdit: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalSheetEdit: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '90%' },
+  modalHeaderEdit: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  modalTitleEdit: { fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary },
+  aiBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, gap: 4 },
+  aiText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: COLORS.primary },
+  inputLabelEdit: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted, letterSpacing: 0.8, marginBottom: 4 },
+  textInput: { backgroundColor: COLORS.background, borderRadius: LAYOUT.radiusXSmall, paddingHorizontal: 12, paddingVertical: 10, fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textPrimary, borderWidth: 1, borderColor: COLORS.border, textAlignVertical: 'top' },
+  saveBtnEdit: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 12, alignItems: 'center' },
+  saveBtnTextEdit: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
 });

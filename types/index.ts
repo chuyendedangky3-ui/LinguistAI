@@ -4,7 +4,7 @@
 
 export type WordType = 'noun' | 'verb' | 'adjective' | 'adverb' | 'phrase' | 'idiom';
 
-export interface Deck {
+export interface Collection {
   id: number;
   name: string;
   icon: string; // Emoji or Lucide icon name
@@ -13,7 +13,7 @@ export interface Deck {
 
 export interface Flashcard {
   id: number;
-  deck_id: number;
+  collection_id: number;
   english: string;
   vietnamese: string;
   phonetic: string;

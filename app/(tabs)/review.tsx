@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ArrowLeft,
@@ -8,25 +9,27 @@ import {
   FolderInput,
   Info,
   Play,
+  Plus,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   X
 } from 'lucide-react-native';
-import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WordDetailModal } from '../../components/flashcard/WordDetailModal';
 import { Card } from '../../components/ui/Card';
 import { COLORS, LAYOUT } from '../../constants/theme';
-import { getAge, getTargetReps } from '../../lib/algorithm';
+import { getAge, getTargetReps, isOverdue } from '../../lib/algorithm';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { Flashcard } from '../../types';
 
 export default function ReviewScreen() {
   const router = useRouter();
-  const { 
-    flashcards, decks, activeDeckId, inboxDeckId, setActiveDeckId, refresh,
+  const {
+    flashcards, collections, activeCollectionId, inboxCollectionId, setActiveCollectionId, refresh,
     updateFlashcard, removeFlashcard, removeMultipleFlashcards, moveFlashcard, moveMultipleFlashcards
   } = useFlashcardStore();
 
@@ -35,45 +38,55 @@ export default function ReviewScreen() {
   const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set());
   const [selectedCard, setSelectedCard] = useState<Flashcard | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editData, setEditData] = useState({
+    english: '', vietnamese: '', grammar_note: '', example_en: '', example_vi: '', phonetic: '', word_type: ''
+  });
+  const [aiLoading, setAiLoading] = useState(false);
 
   // Multi-select cards
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedCardIds, setSelectedCardIds] = useState<Set<number>>(new Set());
-  
+
   // Move cards modal
   const [isMoveModalVisible, setIsMoveModalVisible] = useState(false);
 
   const { editId } = useLocalSearchParams();
 
-  useFocusEffect(useCallback(() => { 
-    refresh(); 
-    // Handle auto-open if editId is provided
-    if (editId) {
-      const card = flashcards.find(c => c.id === Number(editId));
-      if (card) {
-        setSelectedCard(card);
-        setDetailVisible(true);
-      }
-    }
-  }, [editId, flashcards]));
+  const navigation = useNavigation();
 
-  const activeDeck = useMemo(() => 
-    activeDeckId ? decks.find(d => d.id === activeDeckId) : null
-  , [activeDeckId, decks]);
+  useFocusEffect(useCallback(() => {
+    refresh();
+  }, [flashcards]));
+
+  // Clear search on tab re-press
+  useEffect(() => {
+    const unsubscribe = (navigation as any).addListener('tabPress', (e: any) => {
+      if (navigation.isFocused()) {
+        setSearchQuery('');
+        setRevealedIds(new Set());
+        setIsMultiSelectMode(false);
+      }
+    });
+    return unsubscribe;
+  }, [navigation]);
+
+  const activeCollection = useMemo(() =>
+    activeCollectionId ? collections.find(d => d.id === activeCollectionId) : null
+    , [activeCollectionId, collections]);
 
   const activeCards = useMemo(() => {
-    if (!activeDeckId) return [];
-    return flashcards.filter(c => c.deck_id === activeDeckId)
-      .filter(c => 
-        c.english.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.vietnamese.toLowerCase().includes(searchQuery.toLowerCase())
+    if (!activeCollectionId) return [];
+    return flashcards.filter(c => c.collection_id === activeCollectionId)
+      .filter(c =>
+        c.english.toLowerCase().includes(searchQuery.toLowerCase())
       );
-  }, [flashcards, activeDeckId, searchQuery]);
+  }, [flashcards, activeCollectionId, searchQuery]);
 
   const globalSessionInfo = useMemo(() => {
     const today = new Date();
     const dayOfWeek = today.getDay();
-    
+
     const dueToday = flashcards.filter(c => {
       const age = getAge(c.created_at);
       const target = getTargetReps(age, dayOfWeek);
@@ -83,7 +96,7 @@ export default function ReviewScreen() {
     const overdue = flashcards.filter(c => {
       const age = getAge(c.created_at);
       const target = getTargetReps(age, dayOfWeek);
-      if (c.daily_reps > 0) return false; 
+      if (c.daily_reps > 0) return false;
       if (age > 0 && target > 0) return true;
       return false;
     }).filter(c => !dueToday.includes(c));
@@ -92,26 +105,61 @@ export default function ReviewScreen() {
   }, [flashcards]);
 
   const activeStats = useMemo(() => {
-    if (!activeDeckId) return null;
-    const cards = flashcards.filter(c => c.deck_id === activeDeckId);
+    if (!activeCollectionId) return null;
+    const cards = flashcards.filter(c => c.collection_id === activeCollectionId);
     const today = new Date();
     const dayOfWeek = today.getDay();
     let mastered = 0, due = 0;
     for (const c of cards) {
       const age = getAge(c.created_at);
       const target = getTargetReps(age, dayOfWeek);
-      if (c.total_reps >= 10) mastered++;
-      else if (target > 0 && c.daily_reps < target) due++;
+      
+      const isDue = (target > 0 && c.daily_reps < target) || isOverdue(c, today);
+      
+      if (isDue) {
+        due++;
+      } else if (age > 35) {
+        mastered++;
+      }
     }
     return { mastered, due, total: cards.length };
-  }, [flashcards, activeDeckId]);
+  }, [flashcards, activeCollectionId]);
+
+  const handleEditInit = (card: Flashcard) => {
+    setSelectedCard(card);
+    setEditData({
+      english: card.english, vietnamese: card.vietnamese,
+      grammar_note: card.grammar_note || '', example_en: card.example_en || '',
+      example_vi: card.example_vi || '', phonetic: card.phonetic || '',
+      word_type: card.word_type || ''
+    });
+    setIsEditModalVisible(true);
+  };
 
   const handleEditCard = (card: Flashcard) => {
     setDetailVisible(false);
-    router.push({
-      pathname: '/deck/[id]',
-      params: { id: card.deck_id, editId: card.id }
-    });
+    handleEditInit(card);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedCard) return;
+    await updateFlashcard({ id: selectedCard.id, ...editData } as any);
+    setIsEditModalVisible(false);
+    refresh();
+  };
+
+  const handleAiReanalyze = async () => {
+    if (!editData.english.trim()) return;
+    setAiLoading(true);
+    try {
+      const { reanalyzeCard } = await import('../../lib/gemini');
+      const result = await reanalyzeCard(editData.english);
+      setEditData(prev => ({ ...prev, ...result }));
+    } catch (e: any) {
+      Alert.alert('AI Error', e.message);
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const toggleSelectCard = (id: number) => {
@@ -137,82 +185,78 @@ export default function ReviewScreen() {
 
   const handleDeleteMultiple = () => {
     if (selectedCardIds.size === 0) return;
-    Alert.alert(
-      'Bulk Delete',
-      `What would you like to do with ${selectedCardIds.size} selected words?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Move to Inbox',
-          onPress: async () => {
-            if (inboxDeckId) {
-              await moveMultipleFlashcards(Array.from(selectedCardIds), inboxDeckId);
-              handleCancelMulti();
-            }
-          }
-        },
-        {
-          text: 'Delete Permanently',
-          style: 'destructive',
-          onPress: async () => {
-            await removeMultipleFlashcards(Array.from(selectedCardIds));
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+
+    // Only show "Move to Inbox" if NOT already in Inbox
+    // (Assuming all selected cards are from the current active collection)
+    if (activeCollectionId !== inboxCollectionId) {
+      options.push({
+        text: 'Move to Inbox',
+        onPress: async () => {
+          if (inboxCollectionId) {
+            await moveMultipleFlashcards(Array.from(selectedCardIds), inboxCollectionId);
             handleCancelMulti();
           }
-        },
-      ]
-    );
+        }
+      });
+    }
+
+    options.push({
+      text: 'Delete Permanently',
+      style: 'destructive',
+      onPress: async () => {
+        await removeMultipleFlashcards(Array.from(selectedCardIds));
+        handleCancelMulti();
+      }
+    });
+
+    Alert.alert('Bulk Delete', `What would you like to do with ${selectedCardIds.size} selected words?`, options);
   };
 
-  const handleMoveMultiple = (targetDeckId: number) => {
-    moveMultipleFlashcards(Array.from(selectedCardIds), targetDeckId);
+  const handleMoveMultiple = (targetCollectionId: number) => {
+    moveMultipleFlashcards(Array.from(selectedCardIds), targetCollectionId);
     setIsMoveModalVisible(false);
     handleCancelMulti();
     Alert.alert('Success', `Moved ${selectedCardIds.size} words.`);
   };
 
   const handleSingleDelete = (card: Flashcard) => {
-    Alert.alert(
-      'Delete Card',
-      `What would you like to do with "${card.english}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Move to Inbox',
-          onPress: async () => {
-            if (inboxDeckId) {
-              await moveFlashcard(card.id, inboxDeckId);
-              setDetailVisible(false);
-            }
-          }
-        },
-        {
-          text: 'Delete Permanently',
-          style: 'destructive',
-          onPress: async () => {
-            await removeFlashcard(card.id);
+    const options: any[] = [{ text: 'Cancel', style: 'cancel' }];
+
+    if (card.collection_id !== inboxCollectionId) {
+      options.push({
+        text: 'Move to Inbox',
+        onPress: async () => {
+          if (inboxCollectionId) {
+            await moveFlashcard(card.id, inboxCollectionId);
             setDetailVisible(false);
           }
-        },
-      ]
-    );
+        }
+      });
+    }
+
+    options.push({
+      text: 'Delete Permanently',
+      style: 'destructive',
+      onPress: async () => {
+        await removeFlashcard(card.id);
+        setDetailVisible(false);
+      }
+    });
+
+    Alert.alert('Delete Card', `What would you like to do with "${card.english}"?`, options);
   };
 
-  if (activeDeck && activeStats) {
+  if (activeCollection && activeStats) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.focusedHeader}>
-          {isMultiSelectMode ? (
-            <TouchableOpacity onPress={handleCancelMulti} style={styles.backBtn}>
-              <X size={20} color={COLORS.textSecondary} />
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity onPress={() => setActiveDeckId(null)} style={styles.backBtn}>
-              <ArrowLeft size={20} color={COLORS.textSecondary} />
-            </TouchableOpacity>
-          )}
-          
+          <TouchableOpacity onPress={() => setActiveCollectionId(null)} style={styles.backBtn}>
+            <ArrowLeft size={20} color={COLORS.textSecondary} />
+          </TouchableOpacity>
+
           <Text style={styles.focusedTitle} numberOfLines={1}>
-            {isMultiSelectMode ? `${selectedCardIds.size} Selected` : activeDeck.name}
+            {isMultiSelectMode ? `${selectedCardIds.size} Selected` : activeCollection.name}
           </Text>
 
           {isMultiSelectMode ? (
@@ -222,9 +266,9 @@ export default function ReviewScreen() {
               </Text>
             </TouchableOpacity>
           ) : (
-            <TouchableOpacity style={styles.focusedStudyBtn} onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(activeDeckId) } })}>
+            <TouchableOpacity style={styles.focusedStudyBtn} onPress={() => router.push({ pathname: '/session/[id]', params: { id: String(activeCollectionId), mode: 'all' } })}>
               <Play size={14} color="white" fill="white" />
-              <Text style={styles.focusedStudyBtnText}>Study</Text>
+              <Text style={styles.focusedStudyBtnText}>Practice All</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -252,8 +296,8 @@ export default function ReviewScreen() {
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.cardList}>
           {activeCards.map(card => (
-            <TouchableOpacity 
-              key={card.id} 
+            <TouchableOpacity
+              key={card.id}
               style={[styles.cardRow, isMultiSelectMode && selectedCardIds.has(card.id) && styles.cardRowSelected]}
               onPress={() => {
                 if (isMultiSelectMode) {
@@ -292,7 +336,7 @@ export default function ReviewScreen() {
                     <Text style={styles.cardVi}>{card.vietnamese}</Text>
                   </TouchableOpacity>
                 ) : (
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     onPress={(e) => {
                       e.stopPropagation();
                       setRevealedIds(prev => {
@@ -316,6 +360,11 @@ export default function ReviewScreen() {
 
         {isMultiSelectMode && (
           <View style={styles.multiBar}>
+            <TouchableOpacity style={styles.multiBarBtn} onPress={handleCancelMulti}>
+              <X size={20} color="white" />
+              <Text style={styles.multiBarBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <View style={styles.multiDivider} />
             <TouchableOpacity style={styles.multiBarBtn} onPress={() => setIsMoveModalVisible(true)}>
               <FolderInput size={20} color="white" />
               <Text style={styles.multiBarBtnText}>Move</Text>
@@ -328,6 +377,18 @@ export default function ReviewScreen() {
           </View>
         )}
 
+        {!isMultiSelectMode && (
+          <TouchableOpacity
+            style={styles.fab}
+            onPress={() => router.push({
+              pathname: '/tutor',
+              params: { collectionId: String(activeCollectionId), collectionName: activeCollection.name }
+            })}
+          >
+            <Plus size={28} color="white" />
+          </TouchableOpacity>
+        )}
+
         <WordDetailModal
           visible={detailVisible}
           word={selectedCard}
@@ -336,22 +397,61 @@ export default function ReviewScreen() {
           onDelete={handleSingleDelete}
         />
 
+        {/* Edit Card Modal */}
+        <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
+          <View style={styles.modalOverlayEdit}>
+            <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <View style={styles.modalSheetEdit}>
+                <View style={styles.modalHeaderEdit}>
+                  <Text style={styles.modalTitleEdit}>Edit Card</Text>
+                  <TouchableOpacity
+                    onPress={handleAiReanalyze}
+                    disabled={aiLoading}
+                    style={styles.aiBadge}
+                  >
+                    {aiLoading ? <ActivityIndicator size={12} color={COLORS.primary} /> : <Sparkles size={12} color={COLORS.primary} />}
+                    <Text style={styles.aiText}>AI Fix</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView showsVerticalScrollIndicator={false}>
+                  {(['english', 'vietnamese', 'phonetic', 'word_type', 'grammar_note', 'example_en', 'example_vi'] as const).map(field => (
+                    <View key={field} style={{ marginBottom: 12 }}>
+                      <Text style={styles.inputLabelEdit}>{field.replace('_', ' ').toUpperCase()}</Text>
+                      <TextInput
+                        style={[styles.textInput, ['grammar_note', 'example_en', 'example_vi'].includes(field) && { minHeight: 60 }]}
+                        value={(editData as any)[field]}
+                        onChangeText={v => setEditData(p => ({ ...p, [field]: v }))}
+                        multiline={['grammar_note', 'example_en', 'example_vi'].includes(field)}
+                      />
+                    </View>
+                  ))}
+                  <TouchableOpacity style={styles.saveBtnEdit} onPress={handleSaveEdit}>
+                    <Text style={styles.saveBtnTextEdit}>Save Changes</Text>
+                  </TouchableOpacity>
+                  <View style={{ height: 20 }} />
+                </ScrollView>
+              </View>
+            </KeyboardAvoidingView>
+          </View>
+        </Modal>
+
         <Modal visible={isMoveModalVisible} transparent animationType="slide">
           <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setIsMoveModalVisible(false)}>
             <View style={styles.modalSheet}>
               <View style={styles.handleBar} />
               <Text style={styles.modalTitle}>Move to Collection</Text>
               <ScrollView style={{ maxHeight: 300 }}>
-                {decks.map(d => (
-                  <TouchableOpacity 
-                    key={d.id} 
-                    style={[styles.deckSelectRow, d.id === activeDeckId && styles.deckSelectRowDisabled]} 
-                    disabled={d.id === activeDeckId}
+                {collections.map(d => (
+                  <TouchableOpacity
+                    key={d.id}
+                    style={[styles.collectionSelectRow, d.id === activeCollectionId && styles.collectionSelectRowDisabled]}
+                    disabled={d.id === activeCollectionId}
                     onPress={() => handleMoveMultiple(d.id)}
                   >
-                    <Text style={styles.deckEmoji}>{d.icon || '📚'}</Text>
-                    <Text style={styles.deckSelectName}>{d.name}</Text>
-                    {d.id === activeDeckId ? (
+                    <Text style={styles.collectionEmoji}>{d.icon || '📚'}</Text>
+                    <Text style={styles.collectionSelectName}>{d.name}</Text>
+                    {d.id === activeCollectionId ? (
                       <Text style={styles.currentLabel}>Current</Text>
                     ) : (
                       <ChevronRight size={16} color={COLORS.border} />
@@ -377,8 +477,8 @@ export default function ReviewScreen() {
           <Text style={styles.subtitle}>Stay consistent with Intensive Learning.</Text>
         </View>
 
-        <TouchableOpacity 
-          style={styles.heroCard} 
+        <TouchableOpacity
+          style={styles.heroCard}
           activeOpacity={0.9}
           onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'review' } })}
         >
@@ -397,7 +497,7 @@ export default function ReviewScreen() {
         </TouchableOpacity>
 
         <Text style={styles.sectionHeader}>TODAY'S SCHEDULE</Text>
-        
+
         <Card style={styles.infoCard}>
           <View style={styles.infoRow}>
             <View style={[styles.infoDot, { backgroundColor: COLORS.primary }]} />
@@ -456,38 +556,38 @@ const styles = StyleSheet.create({
   header: { marginBottom: 20 },
   title: { fontFamily: 'Outfit_700Bold', fontSize: 28, color: COLORS.textPrimary },
   subtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 4 },
-  
+
   // Focused Mode
-  focusedHeader: { 
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, 
-    paddingVertical: 10, backgroundColor: 'white', borderBottomWidth: 1, borderBottomColor: COLORS.border 
+  focusedHeader: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,
+    paddingVertical: 10, backgroundColor: 'white', borderBottomWidth: 1, borderBottomColor: COLORS.border
   },
   backBtn: { padding: 6, marginRight: 6 },
   focusedTitle: { flex: 1, fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary },
   selectAllBtn: { paddingHorizontal: 10, paddingVertical: 4, backgroundColor: COLORS.border, borderRadius: 16 },
   selectAllText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.textSecondary },
-  focusedStudyBtn: { 
-    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary, 
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, gap: 4 
+  focusedStudyBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, gap: 4
   },
   focusedStudyBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 12, color: 'white' },
   activeStatsRow: { flexDirection: 'row', gap: 6, paddingHorizontal: 16, marginTop: 10 },
   statChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 16, backgroundColor: 'white', borderWidth: 1, borderColor: COLORS.border },
   statChipText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.textSecondary },
-  searchBar: { 
-    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', 
-    margin: 16, paddingHorizontal: 14, height: 44, borderRadius: 12, ...LAYOUT.shadow 
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
+    margin: 16, paddingHorizontal: 14, height: 44, borderRadius: 12, ...LAYOUT.shadow
   },
   searchInput: { flex: 1, marginHorizontal: 10, fontFamily: 'Inter_400Regular', fontSize: 14 },
   cardList: { paddingHorizontal: 16 },
-  cardRow: { 
-    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', 
+  cardRow: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
     borderRadius: 12, padding: 12, marginBottom: 10, ...LAYOUT.shadow, borderWidth: 1.5, borderColor: 'transparent'
   },
   cardRowSelected: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight },
-  checkbox: { 
-    width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: COLORS.border, 
-    marginRight: 10, alignItems: 'center', justifyContent: 'center' 
+  checkbox: {
+    width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: COLORS.border,
+    marginRight: 10, alignItems: 'center', justifyContent: 'center'
   },
   checkboxChecked: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   cardEn: { fontFamily: 'Outfit_700Bold', fontSize: 16, color: COLORS.textPrimary },
@@ -498,11 +598,11 @@ const styles = StyleSheet.create({
   dot: { width: 5, height: 5, borderRadius: 2.5 },
   dotFilled: { backgroundColor: COLORS.success },
   dotEmpty: { backgroundColor: COLORS.border },
-  
+
   // Multi-bar
-  multiBar: { 
-    position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#1A1A1A', 
-    borderRadius: 16, flexDirection: 'row', padding: 2, ...LAYOUT.shadow 
+  multiBar: {
+    position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#1A1A1A',
+    borderRadius: 16, flexDirection: 'row', padding: 2, ...LAYOUT.shadow
   },
   multiBarBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, gap: 6 },
   multiBarBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
@@ -545,11 +645,29 @@ const styles = StyleSheet.create({
   modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20, color: COLORS.textPrimary, marginBottom: 16 },
   modalSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.textSecondary, marginBottom: 12 },
   inputLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, letterSpacing: 1.1, color: COLORS.textMuted, marginBottom: 6 },
-  deckSelectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  deckSelectRowDisabled: { opacity: 0.3 },
-  deckSelectName: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 14, color: COLORS.textPrimary, marginLeft: 10 },
+  collectionSelectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  collectionSelectRowDisabled: { opacity: 0.3 },
+  collectionSelectName: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 14, color: COLORS.textPrimary, marginLeft: 10 },
   currentLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: COLORS.textMuted },
   closeBtn: { marginTop: 16, paddingVertical: 12, alignItems: 'center', borderRadius: 10, backgroundColor: COLORS.background },
   closeBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textSecondary },
-  deckEmoji: { fontSize: 18 },
+  collectionEmoji: { fontSize: 18 },
+  fab: {
+    position: 'absolute', bottom: 24, right: 24,
+    width: 60, height: 60, borderRadius: 30,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center', justifyContent: 'center',
+    ...LAYOUT.shadow, elevation: 5,
+  },
+  // Edit Modal Styles
+  modalOverlayEdit: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalSheetEdit: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '90%' },
+  modalHeaderEdit: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  modalTitleEdit: { fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.textPrimary },
+  aiBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, gap: 4 },
+  aiText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: COLORS.primary },
+  inputLabelEdit: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted, letterSpacing: 0.8, marginBottom: 4 },
+  textInput: { backgroundColor: COLORS.background, borderRadius: LAYOUT.radiusXSmall, paddingHorizontal: 12, paddingVertical: 10, fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textPrimary, borderWidth: 1, borderColor: COLORS.border, textAlignVertical: 'top' },
+  saveBtnEdit: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 12, alignItems: 'center' },
+  saveBtnTextEdit: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
 });

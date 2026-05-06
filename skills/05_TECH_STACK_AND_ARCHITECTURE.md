@@ -27,16 +27,15 @@ and architectural patterns used in LinguistAI.
 ```
 /app                    → Screens (Expo Router file-based routing)
   /(tabs)/              → Bottom tab navigator
-    index.tsx           → Home / Today's session
-    library.tsx         → Deck management
-    tutor.tsx           → AI Tutor chat
-    settings.tsx        → App settings
-  /deck/[id].tsx        → Deck detail screen
-  /session/[deckId].tsx → Active study session
+    index.tsx             → Collection management
+    tutor.tsx             → AI Tutor chat
+    settings.tsx          → App settings
+  /collection/[id].tsx    → Collection detail screen
+  /session/[id].tsx       → Active study session
 
 /components
   /ui/                  → Primitive components (Button, Badge, Input, Card, Spinner)
-  /flashcard/           → FlashcardItem, DeckCard, DeckList
+  /flashcard/           → FlashcardItem, CollectionCard, CollectionList
   /session/             → ReviewCard, SessionProgress, RatingButtons
   /tutor/               → ChatBubble, TutorInput
 
@@ -50,7 +49,7 @@ and architectural patterns used in LinguistAI.
   useFlashcardStore.ts  → Zustand store (state + actions)
 
 /types
-  index.ts              → Shared TypeScript types (Flashcard, Deck, StudySession)
+  index.ts              → Shared TypeScript types (Flashcard, Collection, StudySession)
 
 /constants
   colors.ts             → Design token values
@@ -61,21 +60,21 @@ and architectural patterns used in LinguistAI.
 
 ## 3. Database Schema (SQLite)
 
-### Table: `decks`
-
+### Table: `collections` (DB table: `collections`)
+ 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY | Auto-increment |
-| `name` | TEXT NOT NULL | Deck display name |
+| `name` | TEXT NOT NULL | Collection display name |
 | `icon` | TEXT | Emoji or icon identifier |
 | `created_at` | TEXT NOT NULL | ISO 8601 timestamp |
 
 ### Table: `flashcards`
-
+ 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY | Auto-increment |
-| `deck_id` | INTEGER NOT NULL | Foreign key → `decks.id` |
+| `collection_id` | INTEGER NOT NULL | Foreign key (DB: `collection_id`) |
 | `english` | TEXT NOT NULL | The word or phrase |
 | `vietnamese` | TEXT NOT NULL | Translation |
 | `phonetic` | TEXT | IPA pronunciation |
@@ -118,24 +117,24 @@ db.ts ─────────────────────► SQLite 
 ```ts
 interface FlashcardStore {
   // Data
-  decks: Deck[];
+  collections: Collection[];
   flashcards: Flashcard[];
   sessionQueue: Flashcard[];   // Today's ordered study queue
-  currentIndex: number;
-
+  currentSessionIndex: number;
+ 
   // UI state
   isLoading: boolean;
   isSessionActive: boolean;
-
+ 
   // Actions
-  loadDecks: () => Promise<void>;
-  loadFlashcards: (deckId: number) => Promise<void>;
-  buildSessionQueue: (deckId?: number) => void; // Uses algorithm.ts
-  recordRep: (cardId: number) => Promise<void>;
-  addCard: (data: NewCardInput) => Promise<void>;
-  deleteCard: (cardId: number) => Promise<void>;
-  addDeck: (data: NewDeckInput) => Promise<void>;
-  deleteDeck: (deckId: number) => Promise<void>;
+  loadCollections: () => Promise<void>;
+  loadFlashcards: (collectionId: number) => Promise<void>;
+  buildSessionQueue: (collectionId?: number) => void; // Uses algorithm.ts
+  recordRep: (cardId: number, isSuccess: boolean) => Promise<void>;
+  addFlashcard: (data: Partial<Flashcard>) => Promise<void>;
+  deleteFlashcard: (cardId: number) => Promise<void>;
+  addCollection: (name: string, icon: string) => Promise<number>;
+  removeCollection: (collectionId: number) => Promise<void>;
 }
 ```
 
@@ -146,5 +145,5 @@ interface FlashcardStore {
 1. **No SQL outside `db.ts`** — All queries are centralized and parameterized.
 2. **No algorithm logic outside `algorithm.ts`** — Keeps logic testable and isolated.
 3. **No direct state mutation** — Always use store actions.
-4. **Types in `/types/index.ts`** — Never define `Flashcard` or `Deck` inline in components.
+4. **Types in `/types/index.ts`** — Never define `Flashcard` or `Collection` inline in components.
 5. **`created_at` is immutable** — Never update it after card creation.

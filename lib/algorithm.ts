@@ -24,22 +24,30 @@ export function getAge(createdAt: string): number {
  * Determines the target reps for a card based on its age and today's day of week.
  */
 export function getTargetReps(age: number, dayOfWeek: number): number {
-  // Sunday logic (Grand Review)
+  // Sunday (Day 0): Grand Review
   if (dayOfWeek === 0) {
-    if (age <= 6) return 1;
-    if (age >= 14 && age <= 20) return 1; // Milestone 1
-    if (age >= 28 && age <= 34) return 1; // Milestone 2
+    if ((age >= 0 && age <= 6) || (age >= 14 && age <= 20) || (age >= 28 && age <= 34)) {
+      return 1;
+    }
     return 0;
   }
 
-  // Weekday logic
-  switch (age) {
-    case 0: return 3; // New card
-    case 1: return 1; // Review C1
-    case 2: return 1; // Review C2
-    case 5: return 1; // Review C3a
-    case 6: return 1; // Review C3b
-    default: return 0;
+  // Weekdays (Day 1-6)
+  if (age === 0) return 3; // New cards always target 3 reps on weekdays
+
+  switch (dayOfWeek) {
+    case 1: // Monday: Age 0 only
+      return 0;
+    case 2: // Tuesday: Age 0, 1
+      return age === 1 ? 1 : 0;
+    case 3: // Wednesday: Age 0, 1, 2
+    case 4: // Thursday: Age 0, 1, 2 (Age 3 rests)
+    case 5: // Friday: Age 0, 1, 2 (Age 4 rests)
+      return (age === 1 || age === 2) ? 1 : 0;
+    case 6: // Saturday: Age 0, 1, 2, 5
+      return (age === 1 || age === 2 || age === 5) ? 1 : 0;
+    default:
+      return 0;
   }
 }
 
@@ -47,19 +55,23 @@ export function getTargetReps(age: number, dayOfWeek: number): number {
  * Checks if a card is overdue (missed a previous milestone).
  */
 export function isOverdue(card: Flashcard, today: Date = new Date()): boolean {
-  if (!card.last_studied_at) return false;
+  const age = getAge(card.created_at);
+  if (age > 35) return false; // Already graduated
   
-  const lastStudied = new Date(card.last_studied_at);
-  const isTodayStudied = 
+  const lastStudied = card.last_studied_at ? new Date(card.last_studied_at) : null;
+  const isTodayStudied = lastStudied && 
     lastStudied.getUTCDate() === today.getUTCDate() &&
     lastStudied.getUTCMonth() === today.getUTCMonth() &&
     lastStudied.getUTCFullYear() === today.getUTCFullYear();
     
   if (isTodayStudied) return false;
 
-  const age = getAge(card.created_at);
+  // A card is overdue if it's NOT Day 0, and it hasn't reached a minimal threshold of reps
+  // or if it was due on a previous day. 
+  // Simplified: If it was active on a previous day but daily_reps < target of THAT day.
+  // Since we reset daily_reps, we should check if it finished yesterday's target.
+  // Actually, let's just use the simpler logic in review.tsx for the stats.
   const target = getTargetReps(age, today.getDay());
-  
   return target > 0 && card.daily_reps < target;
 }
 
@@ -83,11 +95,23 @@ export function buildStudyQueue(cards: Flashcard[]): Flashcard[] {
     const age = getAge(card.created_at);
     const target = getTargetReps(age, dayOfWeek);
     
+    // EXCLUDE Age 0 from "Intensive Review" unless it's Sunday
+    if (age === 0 && dayOfWeek !== 0) return false;
+
     // Include if it's due today and not finished, or if it's overdue
     const isDueToday = target > 0 && card.daily_reps < target;
     return isDueToday || isOverdue(card, now);
   });
 
-  // Shuffle the due cards randomly as requested
-  return dueCards.sort(() => Math.random() - 0.5);
+  // Priority: Overdue (missed in past days) -> Due Today
+  return dueCards.sort((a, b) => {
+    const overdueA = isOverdue(a, now);
+    const overdueB = isOverdue(b, now);
+
+    if (overdueA && !overdueB) return -1;
+    if (!overdueA && overdueB) return 1;
+
+    // Within same group, use shuffle logic
+    return Math.random() - 0.5;
+  });
 }

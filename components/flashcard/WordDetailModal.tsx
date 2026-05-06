@@ -43,13 +43,13 @@ export const WordDetailModal: React.FC<WordDetailModalProps> = ({ word, visible,
               <View style={[styles.section, { flex: 1, marginRight: 8 }]}>
                 <Text style={styles.label}>PHONETIC</Text>
                 <View style={styles.subBox}>
-                  <Text style={styles.phoneticText}>{word.phonetic}</Text>
+                  <Text style={styles.phoneticText}>{word.phonetic || 'N/A'}</Text>
                 </View>
               </View>
               <View style={[styles.section, { flex: 1, marginLeft: 8 }]}>
                 <Text style={styles.label}>TYPE</Text>
                 <View style={styles.subBox}>
-                  <Text style={styles.typeText}>{word.word_type.toUpperCase()}</Text>
+                  <Text style={styles.typeText}>{word.word_type ? word.word_type.toUpperCase() : 'N/A'}</Text>
                 </View>
               </View>
             </View>

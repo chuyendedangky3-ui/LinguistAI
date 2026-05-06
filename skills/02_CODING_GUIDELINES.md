@@ -18,7 +18,7 @@ These are the mandatory coding standards for all contributors to the LinguistAI 
 - **React Hooks:** Use `useState`, `useEffect`, `useCallback`, `useMemo` appropriately.
 - **Atomic Design:** Break UI into small, reusable pieces:
   - `/components/ui/` — Primitive elements (Button, Badge, Input, Card).
-  - `/components/flashcard/` — Domain-specific components (FlashcardItem, DeckCard).
+  - `/components/flashcard/` — Domain-specific components (FlashcardItem, CollectionCard).
   - `/components/session/` — Study session components (SessionProgress, ReviewCard).
 - **Props Interface:** Every component must have an explicitly typed `Props` interface.
 
@@ -53,7 +53,7 @@ These are the mandatory coding standards for all contributors to the LinguistAI 
 ## 6. TypeScript Standards
 
 - Enable strict mode. No implicit `any`.
-- Define shared types in **`/types/index.ts`** (e.g., `Flashcard`, `Deck`, `StudySession`).
+- Define shared types in **`/types/index.ts`** (e.g., `Flashcard`, `Collection`, `StudySession`).
 - Prefer `type` over `interface` for data shapes; use `interface` only for extensible contracts.
 
 ---
@@ -69,5 +69,5 @@ These are the mandatory coding standards for all contributors to the LinguistAI 
 ## 8. Performance
 
 - Avoid re-rendering: memoize callbacks with `useCallback`, heavy computations with `useMemo`.
-- Use `FlatList` (never `ScrollView`) for rendering lists of cards or decks.
+- Use `FlatList` (never `ScrollView`) for rendering lists of cards or collections.
 - Lazy-load heavy screens using Expo Router's lazy loading support.

@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { Deck, Flashcard, ApiKey } from '../types';
+import { Collection, Flashcard, ApiKey } from '../types';
 
 /**
  * SQLite database manager for LinguistAI.
@@ -16,27 +16,49 @@ export async function getDb() {
   return dbInstance;
 }
 
+export async function resetDailyRepsIfNeeded() {
+  try {
+    const db = await getDb();
+    const lastReset = await getSetting('last_reps_reset');
+    // Use local date for "today" to match user's perspective
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    if (lastReset !== today) {
+      console.log(`[DB] New day detected (${today}). Resetting daily reps...`);
+      await db.runAsync('UPDATE flashcards SET daily_reps = 0');
+      await setSetting('last_reps_reset', today);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error("[DB] Error resetting daily reps:", error);
+    return false;
+  }
+}
+
 export async function initDb() {
   const db = await getDb();
 
   try {
-    // Basic setup and table creation in one transaction-like execution
+    // 1. Create tables
     await db.execAsync(`
-      PRAGMA foreign_keys = ON;
       PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS decks (
+      
+      CREATE TABLE IF NOT EXISTS collections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         icon TEXT,
         created_at TEXT NOT NULL
       );
+
       CREATE TABLE IF NOT EXISTS flashcards (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        deck_id INTEGER NOT NULL,
+        collection_id INTEGER NOT NULL,
         english TEXT NOT NULL,
-        vietnamese TEXT NOT NULL,
         phonetic TEXT,
-        word_type TEXT,
+        vietnamese TEXT NOT NULL,
+        word_type TEXT NOT NULL,
         grammar_note TEXT,
         example_en TEXT,
         example_vi TEXT,
@@ -44,60 +66,82 @@ export async function initDb() {
         last_studied_at TEXT,
         total_reps INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
+        FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
       );
-      CREATE TABLE IF NOT EXISTS app_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
+
       CREATE TABLE IF NOT EXISTS api_keys (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        api_key TEXT NOT NULL UNIQUE,
+        api_key TEXT NOT NULL,
         is_active INTEGER DEFAULT 1,
         fail_count INTEGER DEFAULT 0,
         last_failed_at TEXT,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
     `);
 
-    // Seed the special Inbox deck exactly once.
-    // Use getFirstAsync carefully - wrap in a safe check
-    const existingInboxId = await db.getFirstAsync<{ value: string }>(
-      "SELECT value FROM app_settings WHERE key = 'inbox_deck_id'"
-    ).catch(() => null);
-
-    if (!existingInboxId) {
+    // 2. Robust Seed: Ensure Inbox exists and is tracked
+    let inboxId: number | null = null;
+    
+    // Check settings first
+    const inboxSetting = await db.getFirstAsync<{ value: string }>(
+      "SELECT value FROM app_settings WHERE key = 'inbox_collection_id'"
+    );
+    
+    if (inboxSetting) {
+      inboxId = Number(inboxSetting.value);
+    }
+    
+    // Verify the collection actually exists
+    const existingInbox = await db.getFirstAsync<{ id: number }>(
+      "SELECT id FROM collections WHERE name = 'Inbox' LIMIT 1"
+    );
+    
+    if (existingInbox) {
+      inboxId = existingInbox.id;
+    } else {
+      // Create it if missing
       const createdAt = new Date().toISOString();
       const result = await db.runAsync(
-        "INSERT INTO decks (name, icon, created_at) VALUES ('Inbox', 'Inbox', ?)",
+        "INSERT INTO collections (name, icon, created_at) VALUES ('Inbox', '📥', ?)",
         [createdAt]
       );
+      inboxId = result.lastInsertRowId;
+    }
+    
+    // Ensure setting is synced
+    if (inboxId) {
       await db.runAsync(
-        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('inbox_deck_id', ?)",
-        [String(result.lastInsertRowId)]
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('inbox_collection_id', ?)",
+        [String(inboxId)]
       );
     }
+
+    console.log("[DB] Database initialized successfully.");
   } catch (error) {
     console.error("[DB] Fatal Initialization Error:", error);
-    // Reset instance so it can retry on next call
     dbInstance = null;
     throw error;
   }
 }
 
 
-// --- Deck Operations ---
+// --- Collection Operations ---
 
-export async function getAllDecks(): Promise<Deck[]> {
+export async function getAllCollections(): Promise<Collection[]> {
   const db = await getDb();
-  return await db.getAllAsync<Deck>('SELECT * FROM decks ORDER BY created_at DESC');
+  return await db.getAllAsync<Collection>('SELECT * FROM collections ORDER BY created_at DESC');
 }
 
-export async function createDeck(name: string, icon: string): Promise<number> {
+export async function createCollection(name: string, icon: string): Promise<number> {
   const db = await getDb();
   // Check for duplicate name (case-insensitive)
   const existing = await db.getFirstAsync<{ id: number }>(
-    'SELECT id FROM decks WHERE LOWER(name) = LOWER(?)',
+    'SELECT id FROM collections WHERE LOWER(name) = LOWER(?)',
     [name.trim()]
   );
   if (existing) {
@@ -105,74 +149,77 @@ export async function createDeck(name: string, icon: string): Promise<number> {
   }
   const createdAt = new Date().toISOString();
   const result = await db.runAsync(
-    'INSERT INTO decks (name, icon, created_at) VALUES (?, ?, ?)',
+    'INSERT INTO collections (name, icon, created_at) VALUES (?, ?, ?)',
     [name.trim(), icon, createdAt]
   );
   return result.lastInsertRowId;
 }
 
-export async function updateDeck(id: number, name: string): Promise<void> {
+export async function updateCollection(id: number, name: string): Promise<void> {
   const db = await getDb();
-  await db.runAsync('UPDATE decks SET name = ? WHERE id = ?', [name, id]);
+  await db.runAsync('UPDATE collections SET name = ? WHERE id = ?', [name, id]);
 }
 
-export async function deleteDeck(id: number): Promise<void> {
+export async function deleteCollection(id: number): Promise<void> {
   const db = await getDb();
   // Get inbox id first
   const setting = await db.getFirstAsync<{ value: string }>(
-    "SELECT value FROM app_settings WHERE key = 'inbox_deck_id'"
+    "SELECT value FROM app_settings WHERE key = 'inbox_collection_id'"
   );
   const inboxId = setting ? Number(setting.value) : null;
   if (inboxId) {
     await db.runAsync(
-      'UPDATE flashcards SET deck_id = ? WHERE deck_id = ?',
+      'UPDATE flashcards SET collection_id = ? WHERE collection_id = ?',
       [inboxId, id]
     );
   }
-  await db.runAsync('DELETE FROM decks WHERE id = ?', [id]);
+  await db.runAsync('DELETE FROM collections WHERE id = ?', [id]);
 }
 
-export async function deleteMultipleDecks(ids: number[]): Promise<void> {
+export async function deleteMultipleCollections(ids: number[]): Promise<void> {
   if (!ids.length) return;
   const db = await getDb();
   const setting = await db.getFirstAsync<{ value: string }>(
-    "SELECT value FROM app_settings WHERE key = 'inbox_deck_id'"
+    "SELECT value FROM app_settings WHERE key = 'inbox_collection_id'"
   );
   const inboxId = setting ? Number(setting.value) : null;
   const placeholders = ids.map(() => '?').join(',');
   if (inboxId) {
     await db.runAsync(
-      `UPDATE flashcards SET deck_id = ? WHERE deck_id IN (${placeholders})`,
+      `UPDATE flashcards SET collection_id = ? WHERE collection_id IN (${placeholders})`,
       [inboxId, ...ids]
     );
   }
-  await db.runAsync(`DELETE FROM decks WHERE id IN (${placeholders})`, ids);
+  await db.runAsync(`DELETE FROM collections WHERE id IN (${placeholders})`, ids);
 }
 
 // --- Flashcard Operations ---
 
-export async function getFlashcardsByDeck(deckId: number): Promise<Flashcard[]> {
+export async function getFlashcardsByCollection(collectionId: number): Promise<Flashcard[]> {
   const db = await getDb();
-  return await db.getAllAsync<Flashcard>(
-    'SELECT * FROM flashcards WHERE deck_id = ? ORDER BY created_at DESC',
-    [deckId]
+  const rows = await db.getAllAsync<any>(
+    'SELECT *, collection_id as collection_id FROM flashcards WHERE collection_id = ? ORDER BY created_at DESC',
+    [collectionId]
   );
+  return rows as Flashcard[];
 }
 
 export async function getAllFlashcards(): Promise<Flashcard[]> {
   const db = await getDb();
-  return await db.getAllAsync<Flashcard>('SELECT * FROM flashcards ORDER BY created_at DESC');
+  const rows = await db.getAllAsync<any>('SELECT *, collection_id as collection_id FROM flashcards ORDER BY created_at DESC');
+  return rows as Flashcard[];
 }
 
-export async function searchFlashcards(query: string): Promise<(Flashcard & { deck_name: string })[]> {
+export async function searchFlashcards(query: string): Promise<(Flashcard & { collection_name: string })[]> {
   const db = await getDb();
-  return await db.getAllAsync<Flashcard & { deck_name: string }>(
-    `SELECT f.*, d.name as deck_name FROM flashcards f
-     LEFT JOIN decks d ON f.deck_id = d.id
-     WHERE f.english LIKE ? OR f.vietnamese LIKE ?
+  const rows = await db.getAllAsync<any>(
+    `SELECT f.*, f.collection_id as collection_id, d.name as collection_name FROM flashcards f
+     LEFT JOIN collections d ON f.collection_id = d.id
+     WHERE f.english LIKE ?
      LIMIT 50`,
-    [`%${query}%`, `%${query}%`]
+    [`%${query}%`]
   );
+  return rows as (Flashcard & { collection_name: string })[];
 }
 
 export async function createFlashcard(card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps' | 'created_at'>): Promise<number> {
@@ -180,11 +227,11 @@ export async function createFlashcard(card: Omit<Flashcard, 'id' | 'daily_reps' 
   const createdAt = new Date().toISOString();
   const result = await db.runAsync(
     `INSERT INTO flashcards (
-      deck_id, english, vietnamese, phonetic, word_type, 
+      collection_id, english, vietnamese, phonetic, word_type, 
       grammar_note, example_en, example_vi, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      card.deck_id, card.english, card.vietnamese, card.phonetic, card.word_type,
+      card.collection_id, card.english, card.vietnamese, card.phonetic, card.word_type,
       card.grammar_note, card.example_en, card.example_vi, createdAt
     ]
   );
@@ -195,56 +242,35 @@ export async function createFlashcardBulk(
   cards: Array<Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps'>>
 ): Promise<void> {
   const db = await getDb();
-  
+
   // Get inbox id as fallback
-  const setting = await db.getFirstAsync<{ value: string }>("SELECT value FROM app_settings WHERE key = 'inbox_deck_id'");
+  const setting = await db.getFirstAsync<{ value: string }>("SELECT value FROM app_settings WHERE key = 'inbox_collection_id'");
   const inboxId = setting ? Number(setting.value) : 1;
-  
-  // Get valid deck ids
-  const validDecks = await db.getAllAsync<{ id: number }>("SELECT id FROM decks");
-  const validDeckIds = new Set(validDecks.map(d => d.id));
+
+  // Get valid collection ids
+  const validCollections = await db.getAllAsync<{ id: number }>("SELECT id FROM collections");
+  const validCollectionIds = new Set(validCollections.map(d => d.id));
 
   await db.runAsync('BEGIN TRANSACTION');
   try {
     const baseTime = Date.now();
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
-      const targetDeckId = (card.deck_id && validDeckIds.has(Number(card.deck_id))) ? Number(card.deck_id) : inboxId;
+      const targetCollectionId = (card.collection_id && validCollectionIds.has(Number(card.collection_id))) ? Number(card.collection_id) : inboxId;
 
-      // Check for duplicate in this transaction
-      const existing = await db.getFirstAsync<{ id: number }>(
-        "SELECT id FROM flashcards WHERE LOWER(TRIM(english)) = LOWER(TRIM(?)) LIMIT 1",
-        [card.english]
+      // Always insert new card to avoid missing cards in bulk operations
+      const createdAt = card.created_at || new Date(baseTime + i).toISOString();
+      await db.runAsync(
+        `INSERT INTO flashcards (
+          collection_id, english, vietnamese, phonetic, word_type,
+          grammar_note, example_en, example_vi, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          targetCollectionId, card.english ?? '', card.vietnamese ?? '', card.phonetic ?? null,
+          card.word_type ?? null, card.grammar_note ?? null, card.example_en ?? null,
+          card.example_vi ?? null, createdAt
+        ]
       );
-
-      if (existing) {
-        // Update existing card but preserve SRS data
-        await db.runAsync(
-          `UPDATE flashcards SET 
-            deck_id = ?, vietnamese = ?, phonetic = ?, word_type = ?, 
-            grammar_note = ?, example_en = ?, example_vi = ?
-           WHERE id = ?`,
-          [
-            targetDeckId, card.vietnamese ?? '', card.phonetic ?? null, card.word_type ?? null,
-            card.grammar_note ?? null, card.example_en ?? null, card.example_vi ?? null,
-            existing.id
-          ]
-        );
-      } else {
-        // Insert new card
-        const createdAt = card.created_at || new Date(baseTime + i).toISOString();
-        await db.runAsync(
-          `INSERT INTO flashcards (
-            deck_id, english, vietnamese, phonetic, word_type,
-            grammar_note, example_en, example_vi, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            targetDeckId, card.english ?? '', card.vietnamese ?? '', card.phonetic ?? null,
-            card.word_type ?? null, card.grammar_note ?? null, card.example_en ?? null, 
-            card.example_vi ?? null, createdAt
-          ]
-        );
-      }
     }
     await db.runAsync('COMMIT');
   } catch (e) {
@@ -284,27 +310,28 @@ export async function updateFlashcard(card: Partial<Flashcard> & { id: number })
   await db.runAsync(query, values);
 }
 
-export async function moveFlashcard(id: number, newDeckId: number): Promise<void> {
+export async function moveFlashcard(id: number, targetCollectionId: number): Promise<void> {
   const db = await getDb();
-  await db.runAsync('UPDATE flashcards SET deck_id = ? WHERE id = ?', [newDeckId, id]);
+  await db.runAsync('UPDATE flashcards SET collection_id = ? WHERE id = ?', [targetCollectionId, id]);
 }
 
-export async function moveMultipleFlashcards(ids: number[], targetDeckId: number): Promise<void> {
+export async function moveMultipleFlashcards(ids: number[], targetCollectionId: number): Promise<void> {
   if (!ids.length) return;
   const db = await getDb();
   const placeholders = ids.map(() => '?').join(',');
   await db.runAsync(
-    `UPDATE flashcards SET deck_id = ? WHERE id IN (${placeholders})`,
-    [targetDeckId, ...ids]
+    `UPDATE flashcards SET collection_id = ? WHERE id IN (${placeholders})`,
+    [targetCollectionId, ...ids]
   );
 }
 
 export async function findDuplicateFlashcard(english: string): Promise<Flashcard | null> {
   const db = await getDb();
-  return await db.getFirstAsync<Flashcard>(
-    `SELECT * FROM flashcards WHERE LOWER(TRIM(english)) = LOWER(TRIM(?)) LIMIT 1`,
+  const row = await db.getFirstAsync<any>(
+    `SELECT *, collection_id as collection_id FROM flashcards WHERE LOWER(TRIM(english)) = LOWER(TRIM(?)) LIMIT 1`,
     [english]
-  ) ?? null;
+  );
+  return row as Flashcard | null;
 }
 
 // --- API Key Operations ---
@@ -363,50 +390,49 @@ export async function setSetting(key: string, value: string): Promise<void> {
 
 // --- Export / Import ---
 
-export async function exportAllData(): Promise<{ version: string; exportedAt: string; decks: Deck[]; cards: Flashcard[] }> {
+export async function exportAllData(): Promise<{ version: string; exportedAt: string; collections: Collection[]; cards: Flashcard[] }> {
   const db = await getDb();
-  const inboxIdStr = await getSetting('inbox_deck_id');
-  const decks = await db.getAllAsync<Deck>('SELECT * FROM decks');
-  const cards = await db.getAllAsync<Flashcard>('SELECT * FROM flashcards');
+  const collections = await db.getAllAsync<Collection>('SELECT * FROM collections');
+  const rawCards = await db.getAllAsync<any>('SELECT *, collection_id as collection_id FROM flashcards');
   return {
     version: '2.0',
     exportedAt: new Date().toISOString(),
-    decks,
-    cards,
+    collections,
+    cards: rawCards as Flashcard[],
   };
 }
 
-export async function importBackupData(decks: any[], cards: any[]): Promise<void> {
+export async function importBackupData(collections: any[], cards: any[]): Promise<void> {
   const db = await getDb();
 
-  // 1. Map old decks to new IDs by name
-  for (const deck of decks) {
-    if (!deck.name) continue;
+  // 1. Map old collections to new IDs by name
+  for (const collection of collections) {
+    if (!collection.name) continue;
     const existing = await db.getFirstAsync<{ id: number }>(
-      'SELECT id FROM decks WHERE LOWER(name) = LOWER(?)',
-      [deck.name]
+      'SELECT id FROM collections WHERE LOWER(name) = LOWER(?)',
+      [collection.name]
     );
     if (!existing) {
-      const createdAt = deck.created_at || new Date().toISOString();
+      const createdAt = collection.created_at || new Date().toISOString();
       await db.runAsync(
-        'INSERT OR IGNORE INTO decks (name, icon, created_at) VALUES (?, ?, ?)',
-        [deck.name, deck.icon || '📚', createdAt]
+        'INSERT OR IGNORE INTO collections (name, icon, created_at) VALUES (?, ?, ?)',
+        [collection.name, collection.icon || '📚', createdAt]
       );
     }
   }
 
   // 2. Fetch fresh mapping of name -> id
-  const currentDecks = await db.getAllAsync<{ id: number, name: string }>('SELECT id, name FROM decks');
+  const currentCollections = await db.getAllAsync<{ id: number, name: string }>('SELECT id, name FROM collections');
   const nameToIdMap: Record<string, number> = {};
-  const validDeckIds = new Set<number>();
-  currentDecks.forEach(d => {
+  const validCollectionIds = new Set<number>();
+  currentCollections.forEach(d => {
     nameToIdMap[d.name.toLowerCase()] = d.id;
-    validDeckIds.add(d.id);
+    validCollectionIds.add(d.id);
   });
 
   // Get inbox id as fallback
   const inboxSetting = await db.getFirstAsync<{ value: string }>(
-    "SELECT value FROM app_settings WHERE key = 'inbox_deck_id'"
+    "SELECT value FROM app_settings WHERE key = 'inbox_collection_id'"
   );
   const inboxId = inboxSetting ? Number(inboxSetting.value) : 1;
 
@@ -417,29 +443,29 @@ export async function importBackupData(decks: any[], cards: any[]): Promise<void
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       if (!card.english || !card.vietnamese) continue;
-      
+
       const createdAt = card.created_at || new Date(baseTime + i).toISOString();
-      
+
       let targetId = inboxId;
-      
+
       // Attempt mapping
-      const oldDeck = decks.find(d => d.id === card.deck_id);
-      if (oldDeck && oldDeck.name && nameToIdMap[oldDeck.name.toLowerCase()] !== undefined) {
-        targetId = nameToIdMap[oldDeck.name.toLowerCase()];
-      } else if (card.deck_name && nameToIdMap[card.deck_name.toLowerCase()] !== undefined) {
-        targetId = nameToIdMap[card.deck_name.toLowerCase()];
-      } else if (card.deck_id && validDeckIds.has(Number(card.deck_id))) {
-        targetId = Number(card.deck_id);
+      const oldCollection = collections.find(d => d.id === card.collection_id);
+      if (oldCollection && oldCollection.name && nameToIdMap[oldCollection.name.toLowerCase()] !== undefined) {
+        targetId = nameToIdMap[oldCollection.name.toLowerCase()];
+      } else if (card.collection_name && nameToIdMap[card.collection_name.toLowerCase()] !== undefined) {
+        targetId = nameToIdMap[card.collection_name.toLowerCase()];
+      } else if (card.collection_id && validCollectionIds.has(Number(card.collection_id))) {
+        targetId = Number(card.collection_id);
       }
 
       await db.runAsync(
         `INSERT OR IGNORE INTO flashcards (
-          deck_id, english, vietnamese, phonetic, word_type,
+          collection_id, english, vietnamese, phonetic, word_type,
           grammar_note, example_en, example_vi, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           targetId,
-          card.english ?? '', 
+          card.english ?? '',
           card.vietnamese ?? '',
           card.phonetic ?? null,
           card.word_type ?? null,

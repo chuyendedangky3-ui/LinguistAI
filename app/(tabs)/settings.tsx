@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Eye, EyeOff,
   Key, Plus, Trash2,
   Upload,
   X
@@ -27,12 +28,11 @@ import {
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { COLORS, LAYOUT } from '../../constants/theme';
-import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { validateAndEnrichImportData } from '../../lib/gemini';
+import { useFlashcardStore } from '../../store/useFlashcardStore';
 
 export default function SettingsScreen() {
   const {
@@ -42,6 +42,7 @@ export default function SettingsScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [newKeyValue, setNewKeyValue] = useState('');
+  const [showKeys, setShowKeys] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [importIssues, setImportIssues] = useState<string[]>([]);
@@ -60,6 +61,14 @@ export default function SettingsScreen() {
     } catch (error) {
       Alert.alert('Error', 'Failed to add API key.');
     }
+  };
+
+  const toggleShowKey = (id: number) => {
+    setShowKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   const confirmDeleteKey = (id: number) => {
@@ -107,13 +116,16 @@ export default function SettingsScreen() {
       const content = await FileSystem.readAsStringAsync(fileUri);
       const backup = JSON.parse(content);
 
-      if (!backup.decks || !backup.cards) {
+      const collections = backup.collections;
+      const cards = backup.cards;
+
+      if (!collections || !cards) {
         throw new Error("Invalid backup file format.");
       }
 
       Alert.alert(
         "Confirm Import",
-        `Found ${backup.decks.length} collections and ${backup.cards.length} cards. Choose import mode:`,
+        `Found ${collections.length} collections and ${cards.length} cards. Choose import mode:`,
         [
           { text: "Cancel", style: "cancel" },
           { 
@@ -121,7 +133,7 @@ export default function SettingsScreen() {
             onPress: async () => {
               setIsProcessing(true);
               try {
-                await importData(backup.decks, backup.cards);
+                await importData(collections, cards);
                 Alert.alert("Success", "Data imported successfully.");
               } catch (e: any) {
                 Alert.alert("Import Error", e.message);
@@ -131,14 +143,14 @@ export default function SettingsScreen() {
             }
           },
           {
-            text: "AI Enrichment",
+            text: "AI Enrichment", 
             onPress: async () => {
               setIsProcessing(true);
               try {
-                const { enriched, issues } = await validateAndEnrichImportData(backup.cards, (current, total) => {
+                const { enriched, issues } = await validateAndEnrichImportData(cards, (current, total) => {
                   setProgress({ current, total });
                 });
-                await importData(backup.decks, enriched);
+                await importData(collections, enriched);
                 setProgress({ current: 0, total: 0 });
                 if (issues.length > 0) {
                   setImportIssues(issues);
@@ -161,27 +173,22 @@ export default function SettingsScreen() {
   };
 
   const handleImportWithAI = async (rawCards: any[]) => {
-    const { addFlashcardsBulk, inboxDeckId, decks, refresh } = useFlashcardStore.getState();
+    const { addFlashcardsBulk, inboxCollectionId, collections, refresh } = useFlashcardStore.getState();
     const { analyzeInput } = require('../../lib/gemini');
 
     setIsProcessing(true);
     try {
-      // 1. Filter cards
-      // Group A: Full (English, Vietnamese, Phonetic, Example)
-      // Group B: Missing English -> Discard
-      // Group C: Has English, missing others -> AI Processing
-      
       const groupA: any[] = [];
       const groupC: string[] = [];
       
       rawCards.forEach(card => {
-        if (!card.english) return; // Group B (Discard)
+        if (!card.english) return; 
 
         const isComplete = card.vietnamese && card.phonetic && card.example_en;
         if (isComplete) {
           groupA.push({
             ...card,
-            deck_id: card.deck_id || inboxDeckId,
+            collection_id: card.collection_id || inboxCollectionId,
           });
         } else {
           groupC.push(card.english);
@@ -191,16 +198,16 @@ export default function SettingsScreen() {
       // 2. Process Group C in batches of 10
       const BATCH_SIZE = 10;
       const processedGroupC: any[] = [];
-      const existingDeckNames = decks.map(d => d.name);
+      const existingCollectionNames = collections.map(d => d.name);
 
       for (let i = 0; i < groupC.length; i += BATCH_SIZE) {
         const batch = groupC.slice(i, i + BATCH_SIZE);
         try {
-          const res = await analyzeInput(batch.join(', '), undefined, existingDeckNames);
+          const res = await analyzeInput(batch.join(', '), undefined, existingCollectionNames);
           if (res && res.flashcards) {
             processedGroupC.push(...res.flashcards.map((fc: any) => ({
               ...fc,
-              deck_id: inboxDeckId, // Save to Inbox by default
+              collection_id: fc.collection_id || inboxCollectionId, 
             })));
           }
         } catch (e) {
@@ -280,10 +287,23 @@ export default function SettingsScreen() {
             apiKeys.map((key) => (
               <View key={key.id} style={styles.keyItem}>
                 <View style={styles.keyItemLeft}>
-                  <Text style={styles.keyLabel}>••••••••{key.api_key.slice(-4)}</Text>
-                  {key.fail_count > 0 && (
-                    <Text style={styles.failCount}>Used keys status: healthy</Text>
-                  )}
+                  <Text style={styles.keyLabel}>
+                    {showKeys.has(key.id) ? key.api_key : `••••••••${key.api_key.slice(-4)}`}
+                  </Text>
+                  <View style={styles.keyActions}>
+                    <TouchableOpacity onPress={() => toggleShowKey(key.id)} style={styles.keyActionBtn}>
+                      {showKeys.has(key.id) ? <EyeOff size={16} color={COLORS.textSecondary} /> : <Eye size={16} color={COLORS.textSecondary} />}
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      onPress={async () => {
+                        await Clipboard.setStringAsync(key.api_key);
+                        Alert.alert("Copied", "API Key copied to clipboard.");
+                      }} 
+                      style={styles.keyActionBtn}
+                    >
+                      <Copy size={16} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <View style={styles.keyItemRight}>
                   <Switch 
@@ -346,7 +366,7 @@ export default function SettingsScreen() {
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
               <Button 
                 title="Copy List" 
-                variant="outline" 
+                variant="primary" 
                 style={{ flex: 1 }}
                 onPress={async () => {
                   await Clipboard.setStringAsync(importIssues.join('\n\n'));
@@ -361,31 +381,37 @@ export default function SettingsScreen() {
 
       {/* Add Key Modal */}
       <Modal visible={modalVisible} transparent animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setModalVisible(false)}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <TouchableWithoutFeedback>
-              <View style={styles.modalContent}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Add API Key</Text>
-                  <TouchableOpacity onPress={() => setModalVisible(false)}>
-                    <X size={24} color={COLORS.textPrimary} />
-                  </TouchableOpacity>
-                </View>
+        <View style={styles.modalOverlay}>
+          <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
+            <View style={StyleSheet.absoluteFill} />
+          </TouchableWithoutFeedback>
 
-                <Text style={styles.inputLabel}>API KEY</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="Paste your Gemini API key"
-                  value={newKeyValue}
-                  onChangeText={setNewKeyValue}
-                  secureTextEntry
-                />
-
-                <Button title="Save Key" onPress={handleAddKey} disabled={!newKeyValue} />
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Add API Key</Text>
+                <TouchableOpacity onPress={() => { setModalVisible(false); setNewKeyValue(''); }}>
+                  <X size={24} color={COLORS.textPrimary} />
+                </TouchableOpacity>
               </View>
-            </TouchableWithoutFeedback>
+
+              <Text style={styles.inputLabel}>API KEY</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Paste your Gemini API key"
+                placeholderTextColor={COLORS.textMuted}
+                value={newKeyValue}
+                onChangeText={setNewKeyValue}
+                secureTextEntry
+              />
+
+              <Button title="Save Key" onPress={handleAddKey} disabled={!newKeyValue} />
+            </View>
           </KeyboardAvoidingView>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -410,7 +436,9 @@ const styles = StyleSheet.create({
   emptyText: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.textSecondary, fontStyle: 'italic', padding: 12, textAlign: 'center' },
   keyItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderTopWidth: 1, borderTopColor: COLORS.border },
   keyItemLeft: { flex: 1 },
-  keyLabel: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
+  keyLabel: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
+  keyActions: { flexDirection: 'row', marginTop: 6, gap: 12 },
+  keyActionBtn: { padding: 4 },
   keyMask: { fontFamily: 'Inter_400Regular', fontSize: 11, color: COLORS.textMuted, marginTop: 1 },
   failCount: { fontFamily: 'Inter_400Regular', fontSize: 9, color: COLORS.danger, marginTop: 1 },
   keyItemRight: { flexDirection: 'row', alignItems: 'center' },
@@ -423,8 +451,8 @@ const styles = StyleSheet.create({
   progressText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, textAlign: 'center', marginBottom: 8 },
   progressBarBg: { height: 6, backgroundColor: COLORS.background, borderRadius: 3, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: COLORS.primary },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 20 },
-  modalContent: { backgroundColor: 'white', borderRadius: 20, padding: 20, maxHeight: '85%' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: 'white', borderRadius: 20, padding: 24, width: '100%', maxWidth: 400, ...LAYOUT.shadow },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20, color: COLORS.textPrimary },
   issueDesc: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.textSecondary, lineHeight: 18, marginBottom: 12 },

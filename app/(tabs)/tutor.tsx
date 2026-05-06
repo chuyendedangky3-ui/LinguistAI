@@ -1,4 +1,5 @@
 import * as ImagePicker from 'expo-image-picker';
+import { useLocalSearchParams } from 'expo-router';
 import * as Speech from 'expo-speech';
 import {
   Camera,
@@ -10,7 +11,7 @@ import {
   Volume2,
   X
 } from 'lucide-react-native';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -30,38 +31,51 @@ import { analyzeInput, extractFromImage } from '../../lib/gemini';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 
 export default function TutorScreen() {
+  const { collectionId: paramCollectionId, collectionName } = useLocalSearchParams<{ collectionId?: string; collectionName?: string }>();
+  const { 
+    collections, addFlashcardsBulk, findDuplicate, addCollection, inboxCollectionId, refresh 
+  } = useFlashcardStore();
+
   const [input, setInput] = useState('');
+  const [context, setContext] = useState(collectionName || '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [uncheckedIndices, setUncheckedIndices] = useState<Set<number>>(new Set());
-  const [cardDecks, setCardDecks] = useState<Record<number, { deckId?: number; newDeckName?: string }>>({});
+  const [cardCollections, setCardCollections] = useState<Record<number, { collectionId?: number; newCollectionName?: string }>>({});
   
-  // Deck selector
-  const [isDeckModalVisible, setIsDeckModalVisible] = useState(false);
+  // Collection selector
+  const [isCollectionModalVisible, setIsCollectionModalVisible] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | 'master' | null>(null);
-  const [deckSearch, setDeckSearch] = useState('');
-
-  const { decks, addFlashcardsBulk, findDuplicate, addDeck, inboxDeckId, refresh } = useFlashcardStore();
+  const [collectionSearch, setCollectionSearch] = useState('');
 
   const handleAiResult = (data: any) => {
     setResult(data);
     setUncheckedIndices(new Set());
     
     if (data && data.flashcards) {
-      const initialMap: Record<number, { deckId?: number; newDeckName?: string }> = {};
+      const initialMap: Record<number, { collectionId?: number; newCollectionName?: string }> = {};
       data.flashcards.forEach((card: any, idx: number) => {
-        if (card.suggested_deck) {
-          const existing = decks.find(d => d.name.toLowerCase() === card.suggested_deck.toLowerCase());
+        if (card.suggested_collection) {
+          const initialCollectionId = paramCollectionId ? Number(paramCollectionId) : null;
+          const existing = collections.find(d => d.name.toLowerCase() === card.suggested_collection.toLowerCase());
+          
           if (existing) {
-            initialMap[idx] = { deckId: existing.id };
+            // Priority 1: AI suggested an existing collection
+            initialMap[idx] = { collectionId: existing.id };
+          } else if (initialCollectionId) {
+            // Priority 2: Use the collection we came from if AI suggested something new
+            initialMap[idx] = { collectionId: initialCollectionId };
+          } else if (card.suggested_collection.toLowerCase() === 'inbox') {
+            initialMap[idx] = { collectionId: inboxCollectionId || undefined };
           } else {
-            initialMap[idx] = { newDeckName: card.suggested_deck };
+            // Priority 3: AI suggested a brand new collection name
+            initialMap[idx] = { newCollectionName: card.suggested_collection };
           }
         } else {
-          initialMap[idx] = { deckId: inboxDeckId || undefined };
+          initialMap[idx] = { collectionId: paramCollectionId ? Number(paramCollectionId) : (inboxCollectionId || undefined) };
         }
       });
-      setCardDecks(initialMap);
+      setCardCollections(initialMap);
     }
   };
 
@@ -69,8 +83,8 @@ export default function TutorScreen() {
     if (!input.trim() || loading) return;
     setLoading(true);
     try {
-      const existingDeckNames = decks.map(d => d.name);
-      const data = await analyzeInput(input, undefined, existingDeckNames);
+      const existingCollectionNames = collections.map(d => d.name);
+      const data = await analyzeInput(input, undefined, existingCollectionNames);
       handleAiResult(data);
     } catch (error: any) {
       Alert.alert("Analysis Failed", error.message || "Please check your API keys.");
@@ -97,9 +111,9 @@ export default function TutorScreen() {
       if (!pickerResult.canceled && pickerResult.assets[0].base64) {
         setLoading(true);
         const { base64, mimeType } = pickerResult.assets[0];
-        const existingDeckNames = decks.map(d => d.name);
+        const existingCollectionNames = collections.map(d => d.name);
         try {
-          const data = await extractFromImage(base64, mimeType || 'image/jpeg', existingDeckNames);
+          const data = await extractFromImage(base64, mimeType || 'image/jpeg', existingCollectionNames);
           if (data && data.flashcards?.length > 0) {
             handleAiResult(data);
           } else {
@@ -129,25 +143,36 @@ export default function TutorScreen() {
     try {
       const operations: any[] = [];
       
+      const newlyCreatedCollections: Record<string, number> = {};
+      
       for (const idx of validIndices) {
         const card = result.flashcards[idx];
-        const target = cardDecks[idx];
-        let finalDeckId = inboxDeckId;
+        const target = cardCollections[idx];
+        let finalCollectionId = inboxCollectionId;
 
-        if (target?.deckId) {
-          finalDeckId = target.deckId;
-        } else if (target?.newDeckName) {
-          let existing = decks.find(d => d.name === target.newDeckName);
-          if (!existing) {
-            await addDeck(target.newDeckName!, '📚');
-            await refresh();
-            existing = useFlashcardStore.getState().decks.find(d => d.name === target.newDeckName);
+        if (target?.collectionId) {
+          finalCollectionId = target.collectionId;
+        } else if (target?.newCollectionName) {
+          const lowerName = target.newCollectionName.toLowerCase();
+          
+          if (newlyCreatedCollections[lowerName]) {
+            finalCollectionId = newlyCreatedCollections[lowerName];
+          } else {
+            const currentCollections = useFlashcardStore.getState().collections;
+            let existing = currentCollections.find(d => d.name.toLowerCase() === lowerName);
+            
+            if (!existing) {
+              const newCollectionId = await addCollection(target.newCollectionName, '📚');
+              newlyCreatedCollections[lowerName] = newCollectionId;
+              finalCollectionId = newCollectionId;
+            } else {
+              finalCollectionId = existing.id;
+            }
           }
-          if (existing) finalDeckId = existing.id;
         }
 
         operations.push({
-          deck_id: finalDeckId,
+          collection_id: finalCollectionId,
           english: card.english,
           vietnamese: card.vietnamese,
           phonetic: card.phonetic,
@@ -177,12 +202,12 @@ export default function TutorScreen() {
     });
   };
 
-  const openDeckSelector = (idx: number | 'master') => {
+  const openCollectionSelector = (idx: number | 'master') => {
     setEditingIndex(idx);
-    setIsDeckModalVisible(true);
+    setIsCollectionModalVisible(true);
   };
 
-  const filteredDecks = decks.filter(d => d.name.toLowerCase().includes(deckSearch.toLowerCase()));
+  const filteredCollections = collections.filter(d => d.name.toLowerCase().includes(collectionSearch.toLowerCase()));
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -216,7 +241,7 @@ export default function TutorScreen() {
                 </TouchableOpacity>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <TouchableOpacity onPress={() => setInput('')}>
+                <TouchableOpacity onPress={() => { setInput(''); setResult(null); }}>
                   <X size={20} color={COLORS.textSecondary} />
                 </TouchableOpacity>
                 <TouchableOpacity 
@@ -275,13 +300,13 @@ export default function TutorScreen() {
                     )}
 
                     <TouchableOpacity 
-                      onPress={(e) => { e.stopPropagation(); openDeckSelector(idx); }}
-                      style={styles.deckChip}
+                      onPress={(e) => { e.stopPropagation(); openCollectionSelector(idx); }}
+                      style={styles.collectionChip}
                     >
-                      <Text style={styles.deckLabel}>Save to:</Text>
-                      <Text style={styles.deckValue}>
-                        {cardDecks[idx]?.newDeckName ? `${cardDecks[idx].newDeckName} (New)` : 
-                         (decks.find(d => d.id === cardDecks[idx]?.deckId)?.name || 'Inbox')}
+                      <Text style={styles.collectionLabel}>Save to:</Text>
+                      <Text style={styles.collectionValue}>
+                        {cardCollections[idx]?.newCollectionName ? `${cardCollections[idx].newCollectionName} (New)` : 
+                         (collections.find(d => d.id === cardCollections[idx]?.collectionId)?.name || 'Not Selected')}
                       </Text>
                       <ChevronDown size={14} color={COLORS.textSecondary} />
                     </TouchableOpacity>
@@ -293,11 +318,30 @@ export default function TutorScreen() {
               <View style={styles.saveCard}>
                 <Text style={styles.masterLabel}>APPLY TO ALL SELECTED</Text>
                 <TouchableOpacity 
-                  onPress={() => openDeckSelector('master')}
+                  onPress={() => openCollectionSelector('master')}
                   style={styles.masterSelector}
                 >
                   <Text style={styles.masterValue} numberOfLines={1}>
-                    {decks.find(d => d.id === cardDecks[Object.keys(cardDecks)[0] as any]?.deckId)?.name || 'Select collection...'}
+                    {(() => {
+                      const selectedIndices = result.flashcards
+                        .map((_: any, i: number) => i)
+                        .filter((i: number) => !uncheckedIndices.has(i));
+                      
+                      if (selectedIndices.length === 0) return 'None Selected';
+                      
+                      const firstId = cardCollections[selectedIndices[0]]?.collectionId;
+                      const firstNew = cardCollections[selectedIndices[0]]?.newCollectionName;
+                      
+                      const allSame = selectedIndices.every((idx: number) => 
+                        cardCollections[idx]?.collectionId === firstId && 
+                        cardCollections[idx]?.newCollectionName === firstNew
+                      );
+                      
+                      if (!allSame) return 'Mixed Collections';
+                      
+                      if (firstNew) return `${firstNew} (New)`;
+                      return collections.find(d => d.id === firstId)?.name || 'Not Selected';
+                    })()}
                   </Text>
                   <ChevronDown size={18} color={COLORS.textSecondary} />
                 </TouchableOpacity>
@@ -316,14 +360,14 @@ export default function TutorScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Deck Selector Modal */}
-      <Modal visible={isDeckModalVisible} transparent animationType="slide">
+      {/* Collection Selector Modal */}
+      <Modal visible={isCollectionModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} onPress={() => setIsDeckModalVisible(false)} />
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setIsCollectionModalVisible(false)} />
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Collection</Text>
-              <TouchableOpacity onPress={() => setIsDeckModalVisible(false)}>
+              <TouchableOpacity onPress={() => setIsCollectionModalVisible(false)}>
                 <X size={24} color={COLORS.textPrimary} />
               </TouchableOpacity>
             </View>
@@ -332,31 +376,31 @@ export default function TutorScreen() {
               <TextInput 
                 style={styles.modalSearchInput} 
                 placeholder="Search..." 
-                value={deckSearch}
-                onChangeText={setDeckSearch}
+                value={collectionSearch}
+                onChangeText={setCollectionSearch}
               />
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              {filteredDecks.map(deck => (
+              {filteredCollections.map(collection => (
                 <TouchableOpacity 
-                  key={deck.id}
+                  key={collection.id}
                   onPress={() => {
                     if (editingIndex === 'master') {
-                      const newMap = { ...cardDecks };
+                      const newMap = { ...cardCollections };
                       Object.keys(newMap).forEach(k => {
-                        newMap[parseInt(k)] = { deckId: deck.id };
+                        newMap[parseInt(k)] = { collectionId: collection.id };
                       });
-                      setCardDecks(newMap);
+                      setCardCollections(newMap);
                     } else if (editingIndex !== null) {
-                      setCardDecks(prev => ({ ...prev, [editingIndex]: { deckId: deck.id } }));
+                      setCardCollections(prev => ({ ...prev, [editingIndex]: { collectionId: collection.id } }));
                     }
-                    setIsDeckModalVisible(false);
-                    setDeckSearch('');
+                    setIsCollectionModalVisible(false);
+                    setCollectionSearch('');
                   }}
-                  style={styles.deckOption}
+                  style={styles.collectionOption}
                 >
-                  <Text style={styles.deckOptionText}>{deck.name}</Text>
-                  {deck.id === inboxDeckId && <Badge label="INBOX" variant="muted" />}
+                  <Text style={styles.collectionOptionText}>{collection.name}</Text>
+                  {collection.id === inboxCollectionId && <Badge label="INBOX" variant="muted" />}
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -421,13 +465,13 @@ const styles = StyleSheet.create({
   cardPhonetic: { fontFamily: 'Inter_400Regular', fontSize: 13, color: COLORS.primary, marginTop: 1 },
   cardVi: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 2 },
   cardNote: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textMuted, fontStyle: 'italic', marginTop: 8 },
-  deckChip: {
+  collectionChip: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background,
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start',
     marginTop: 10, gap: 4, borderWidth: 1, borderColor: COLORS.border,
   },
-  deckLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted },
-  deckValue: { fontFamily: 'Outfit_600SemiBold', fontSize: 11, color: COLORS.textPrimary },
+  collectionLabel: { fontFamily: 'Inter_500Medium', fontSize: 9, color: COLORS.textMuted },
+  collectionValue: { fontFamily: 'Outfit_600SemiBold', fontSize: 11, color: COLORS.textPrimary },
 
   saveCard: {
     backgroundColor: 'white', borderRadius: LAYOUT.radiusSmall,
@@ -453,9 +497,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, height: 40, borderRadius: 8, marginBottom: 12,
   },
   modalSearchInput: { flex: 1, marginLeft: 8, fontFamily: 'Inter_400Regular', fontSize: 14 },
-  deckOption: {
+  collectionOption: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  deckOptionText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
+  collectionOptionText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
 });

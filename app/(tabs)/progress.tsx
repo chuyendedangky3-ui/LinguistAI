@@ -1,31 +1,46 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Award, Book, ChevronRight, Clock, TrendingUp } from 'lucide-react-native';
+import { Award, Book, ChevronRight, Clock, RotateCcw, TrendingUp } from 'lucide-react-native';
 import React, { useCallback, useMemo } from 'react';
-import { Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { COLORS, LAYOUT } from '../../constants/theme';
+import { getAge, getTargetReps, isOverdue } from '../../lib/algorithm';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 
 const { width } = Dimensions.get('window');
 
 export default function ProgressScreen() {
   const router = useRouter();
-  const { flashcards, decks, refresh } = useFlashcardStore();
+  const { 
+    flashcards, collections, refresh,
+    isExamActive, examIndex, examQueue, examResults, startExam, resetExam
+  } = useFlashcardStore();
 
   useFocusEffect(useCallback(() => { refresh(); }, []));
 
   const stats = useMemo(() => {
     const total = flashcards.length;
-    const totalReps = flashcards.reduce((sum, c) => sum + c.total_reps, 0);
-    // Mastery definition: Repetitions > 10
-    const mastered = flashcards.filter(c => c.total_reps >= 10).length;
-    const learning = flashcards.filter(c => c.total_reps > 0 && c.total_reps < 10).length;
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+
+    const mastered = flashcards.filter(c => getAge(c.created_at) > 35).length;
+    const learning = flashcards.filter(c => {
+      const age = getAge(c.created_at);
+      return age <= 35 && c.total_reps > 0;
+    }).length;
     const newCards = flashcards.filter(c => c.total_reps === 0).length;
+    
+    const dueTodayCount = flashcards.filter(c => {
+      const age = getAge(c.created_at);
+      const target = getTargetReps(age, dayOfWeek);
+      return (target > 0 && c.daily_reps < target) || isOverdue(c, today);
+    }).length;
 
     const masteryPercent = total > 0 ? Math.round((mastered / total) * 100) : 0;
 
-    return { total, totalReps, mastered, learning, newCards, masteryPercent };
+    return { total, mastered, learning, newCards, dueTodayCount, masteryPercent };
   }, [flashcards]);
 
   const StatBox = ({ title, count, icon: Icon, color, subtitle }: any) => (
@@ -67,33 +82,90 @@ export default function ProgressScreen() {
         <Text style={styles.sectionTitle}>MASTERY LEVELS</Text>
         <View style={styles.statsGrid}>
           <StatBox title="New" count={stats.newCards} icon={Book} color="#94A3B8" subtitle="Never studied" />
-          <StatBox title="Learning" count={stats.learning} icon={Clock} color="#F97316" subtitle="Short-term" />
-          <StatBox title="Mastered" count={stats.mastered} icon={Award} color={COLORS.success} subtitle="Long-term" />
-          <StatBox title="Total Reps" count={stats.totalReps} icon={TrendingUp} color={COLORS.primary} subtitle="Total effort" />
+          <StatBox title="In Review" count={stats.learning} icon={Clock} color="#F97316" subtitle="Current cycle" />
+          <StatBox title="Mastered" count={stats.mastered} icon={Award} color={COLORS.success} subtitle="Graduated" />
+          <StatBox title="Due Today" count={stats.dueTodayCount} icon={TrendingUp} color={COLORS.primary} subtitle="Tasks for today" />
         </View>
 
+        {/* Mastery Exam Section */}
+        <Text style={styles.sectionTitle}>MASTERY EXAM</Text>
+        <Card style={styles.examCard}>
+          <View style={styles.examHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.examTitle}>Global Knowledge Check</Text>
+              <Text style={styles.examSub}>Test all studied words without re-learning cycles.</Text>
+            </View>
+            <Award size={32} color={COLORS.primary} />
+          </View>
+          
+          {isExamActive ? (
+            <View style={styles.examProgressRow}>
+              <View style={styles.examProgressInfo}>
+                <Text style={styles.examProgressText}>
+                  {examIndex >= examQueue.length ? 'Exam Completed' : `Progress: ${examIndex} / ${examQueue.length}`}
+                </Text>
+                <Text style={styles.examScoreText}>
+                  <Text style={{ color: COLORS.success }}>{examResults.remember}</Text> Correct • <Text style={{ color: COLORS.danger }}>{examResults.forget}</Text> Wrong
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity 
+                  onPress={() => {
+                    Alert.alert("Reset Exam", "Are you sure you want to discard your progress and start over?", [
+                      { text: "Cancel", style: "cancel" },
+                      { text: "Reset", style: "destructive", onPress: resetExam }
+                    ]);
+                  }}
+                  style={styles.resetBtnSmall}
+                >
+                  <RotateCcw size={16} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+                <Button 
+                  title={examIndex >= examQueue.length ? "Results" : "Continue"} 
+                  size="small"
+                  onPress={() => router.push('/exam')} 
+                />
+              </View>
+            </View>
+          ) : (
+            <Button 
+              title="Start New Exam" 
+              variant="primary"
+              onPress={() => {
+                if (stats.learning + stats.mastered === 0) {
+                  Alert.alert("Notice", "You need to study some words first!");
+                } else {
+                  startExam();
+                  router.push('/exam');
+                }
+              }} 
+              style={{ marginTop: 12 }}
+            />
+          )}
+        </Card>
+
         <Text style={styles.sectionTitle}>COLLECTION BREAKDOWN</Text>
-        {decks.map(deck => {
-          const deckCards = flashcards.filter(c => c.deck_id === deck.id);
-          const deckMastered = deckCards.filter(c => c.total_reps >= 10).length;
-          const percent = deckCards.length > 0 ? Math.round((deckMastered / deckCards.length) * 100) : 0;
+        {collections.map(collection => {
+          const collectionCards = flashcards.filter(c => c.collection_id === collection.id);
+          const collectionMastered = collectionCards.filter(c => getAge(c.created_at) > 35).length;
+          const percent = collectionCards.length > 0 ? Math.round((collectionMastered / collectionCards.length) * 100) : 0;
           
           return (
             <TouchableOpacity 
-              key={deck.id} 
-              onPress={() => router.push(`/deck/${deck.id}`)}
+              key={collection.id} 
+              onPress={() => router.push(`/collection/${collection.id}`)}
               activeOpacity={0.7}
             >
-              <Card style={styles.deckItem}>
-                <View style={styles.deckHeader}>
-                  <Text style={styles.deckName}>{deck.name}</Text>
-                  <Text style={styles.deckPercent}>{percent}%</Text>
+              <Card style={styles.collectionItem}>
+                <View style={styles.collectionHeader}>
+                  <Text style={styles.collectionName}>{collection.name}</Text>
+                  <Text style={styles.collectionPercent}>{percent}%</Text>
                 </View>
-                <View style={styles.deckTrack}>
-                  <View style={[styles.deckFill, { width: `${percent}%` }]} />
+                <View style={styles.collectionTrack}>
+                  <View style={[styles.collectionFill, { width: `${percent}%` }]} />
                 </View>
-                <View style={styles.deckFooter}>
-                  <Text style={styles.deckSub}>{deckMastered} / {deckCards.length} mastered</Text>
+                <View style={styles.collectionFooter}>
+                  <Text style={styles.collectionSub}>{collectionMastered} / {collectionCards.length} mastered</Text>
                   <ChevronRight size={16} color={COLORS.textMuted} />
                 </View>
               </Card>
@@ -134,12 +206,30 @@ const styles = StyleSheet.create({
   statLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
   statSub: { fontFamily: 'Inter_400Regular', fontSize: 9, color: COLORS.textMuted, marginTop: 1 },
 
-  deckItem: { padding: 16, marginBottom: 10 },
-  deckHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  deckName: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
-  deckPercent: { fontFamily: 'Outfit_700Bold', fontSize: 14, color: COLORS.primary },
-  deckTrack: { height: 5, backgroundColor: COLORS.border, borderRadius: 2.5, overflow: 'hidden' },
-  deckFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 2.5 },
-  deckFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-  deckSub: { fontFamily: 'Inter_400Regular', fontSize: 11, color: COLORS.textSecondary },
+  collectionItem: { padding: 16, marginBottom: 10 },
+  collectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  collectionName: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.textPrimary },
+  collectionPercent: { fontFamily: 'Outfit_700Bold', fontSize: 14, color: COLORS.primary },
+  collectionTrack: { height: 5, backgroundColor: COLORS.border, borderRadius: 2.5, overflow: 'hidden' },
+  collectionFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 2.5 },
+  collectionFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
+  collectionSub: { fontFamily: 'Inter_400Regular', fontSize: 11, color: COLORS.textSecondary },
+  
+  // Exam Styles
+  examCard: { padding: 16, marginBottom: 24 },
+  examHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  examTitle: { fontFamily: 'Outfit_700Bold', fontSize: 17, color: COLORS.textPrimary },
+  examSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 2 },
+  examProgressRow: { 
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: COLORS.background, padding: 12, borderRadius: 12, marginTop: 8 
+  },
+  examProgressInfo: { flex: 1 },
+  examProgressText: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: COLORS.textPrimary },
+  examScoreText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
+  resetBtnSmall: {
+    width: 32, height: 32, borderRadius: 8, backgroundColor: 'white',
+    borderWidth: 1, borderColor: COLORS.border,
+    alignItems: 'center', justifyContent: 'center'
+  },
 });

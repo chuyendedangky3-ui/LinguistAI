@@ -1,72 +1,62 @@
-import {
-  Inter_400Regular,
-  Inter_500Medium,
-} from '@expo-google-fonts/inter';
-import {
-  Outfit_400Regular,
-  Outfit_600SemiBold,
-  Outfit_700Bold,
-  useFonts,
-} from '@expo-google-fonts/outfit';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { StatusBar } from 'expo-status-bar';
-import React, { useEffect } from 'react';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useEffect } from 'react';
+import 'react-native-reanimated';
 import "../global.css";
-import { useFlashcardStore } from '../store/useFlashcardStore';
 
+import { useColorScheme } from '@/components/useColorScheme';
+import { useFlashcardStore } from '@/store/useFlashcardStore';
+
+export {
+  // Catch any errors thrown by the Layout component.
+  ErrorBoundary
+} from 'expo-router';
+
+export const unstable_settings = {
+  // Ensure that reloading on `/modal` keeps a back button present.
+  initialRouteName: '(tabs)',
+};
+
+// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const init = useFlashcardStore(state => state.init);
-  const isInitialized = useFlashcardStore(state => state.isInitialized);
-
-  const [fontsLoaded] = useFonts({
-    Outfit_400Regular,
-    Outfit_600SemiBold,
-    Outfit_700Bold,
-    Inter_400Regular,
-    Inter_500Medium,
+  const [loaded, error] = useFonts({
+    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
+    ...FontAwesome.font,
   });
+  const { isInitialized, init } = useFlashcardStore();
 
   useEffect(() => {
-    init();
-  }, [init]);
+    if (loaded && !isInitialized) {
+      init().catch(err => console.error("Initialization failed:", err));
+    }
+  }, [loaded, isInitialized]);
 
   useEffect(() => {
-    if (fontsLoaded && isInitialized) {
+    if (isInitialized) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded, isInitialized]);
+  }, [isInitialized]);
 
-  if (!fontsLoaded || !isInitialized) {
+  if (!loaded || !isInitialized) {
     return null;
   }
 
+  return <RootLayoutNav />;
+}
+
+function RootLayoutNav() {
+  const colorScheme = useColorScheme();
+
   return (
-    <SafeAreaProvider>
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <StatusBar style="dark" />
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen 
-            name="deck/[id]" 
-            options={{ 
-              presentation: 'card',
-              headerShown: false 
-            }} 
-          />
-          <Stack.Screen 
-            name="session/[id]" 
-            options={{ 
-              presentation: 'fullScreenModal',
-              headerShown: false
-            }}
-          />
-        </Stack>
-      </GestureHandlerRootView>
-    </SafeAreaProvider>
+    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      <Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      </Stack>
+    </ThemeProvider>
   );
 }

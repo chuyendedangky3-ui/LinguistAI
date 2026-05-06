@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
 import { Check, RotateCcw, Volume2, X } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
@@ -14,13 +14,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, LAYOUT } from '../../constants/theme';
-import { getAge } from '../../lib/algorithm';
+import { getAge, getTargetReps } from '../../lib/algorithm';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 
 export default function SessionScreen() {
   const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
   const router = useRouter();
-  const { sessionQueue, currentSessionIndex, startSession, recordRep, nextCard } = useFlashcardStore();
+  const { sessionQueue, currentSessionIndex, sessionMode, startSession, recordRep, nextCard, collections } = useFlashcardStore();
 
   const [isFlipped, setIsFlipped] = useState(false);
   const [studyMode, setStudyMode] = useState<'en-vi' | 'vi-en'>('en-vi');
@@ -28,9 +28,9 @@ export default function SessionScreen() {
   const flipAnim = useState(new Animated.Value(0))[0];
 
   useEffect(() => {
-    let deckId: number | undefined;
-    if (id !== 'new' && id !== 'review') deckId = Number(id);
-    startSession(deckId, (mode as any) || 'review');
+    let collectionId: number | undefined;
+    if (id !== 'new' && id !== 'review') collectionId = Number(id);
+    startSession(collectionId, (mode as any) || 'review');
   }, [id, mode]);
 
   const currentCard = sessionQueue[currentSessionIndex];
@@ -109,20 +109,36 @@ export default function SessionScreen() {
 
   const progress = (currentSessionIndex / sessionQueue.length) * 100;
   const age = currentCard ? getAge(currentCard.created_at) : 0;
+  const dayOfWeek = new Date().getDay();
+  const targetReps = sessionMode === 'all' ? 3 : (getTargetReps(age, dayOfWeek) || 1);
+
+  const activeCollection = id && id !== 'review' && id !== 'new' 
+    ? collections.find(c => c.id === Number(id)) 
+    : null;
+
+  const displayTitle = activeCollection 
+    ? activeCollection.name 
+    : id === 'new' ? 'Cram New' : 'Daily Review';
 
   return (
     <View style={styles.container}>
+      <Stack.Screen options={{ headerShown: false }} />
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
           <X size={24} color={COLORS.textPrimary} />
         </TouchableOpacity>
-        <View style={styles.progressWrap}>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progress}%` }]} />
+        
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={styles.headerTitle} numberOfLines={1}>{displayTitle}</Text>
+          <View style={styles.progressWrap}>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${progress}%` }]} />
+            </View>
+            <Text style={styles.progressText}>{currentSessionIndex + 1} / {sessionQueue.length}</Text>
           </View>
-          <Text style={styles.progressText}>{currentSessionIndex + 1} / {sessionQueue.length}</Text>
         </View>
+
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           {history && (
             <TouchableOpacity onPress={handleUndo} style={styles.headerBtn}>
@@ -141,7 +157,9 @@ export default function SessionScreen() {
       {/* Age badge */}
       {currentCard && (
         <View style={styles.ageBadge}>
-          <Text style={styles.ageText}>Day {age} · {currentCard.daily_reps}/{3} reps</Text>
+          <Text style={styles.ageText}>
+            Day {age} · {currentCard.daily_reps}/{targetReps} reps
+          </Text>
         </View>
       )}
 
@@ -249,15 +267,17 @@ export default function SessionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   header: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 52, paddingBottom: 12,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 16,
+    backgroundColor: 'white', borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  headerBtn: { padding: 8 },
-  progressWrap: { flex: 1, alignItems: 'center', marginHorizontal: 12 },
+  headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.textPrimary, marginBottom: 4 },
+  progressWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, width: '100%', paddingHorizontal: 16 },
   progressTrack: {
-    width: '100%', height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden',
+    flex: 1, height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 3 },
-  progressText: { fontFamily: 'Inter_500Medium', fontSize: 12, color: COLORS.textMuted, marginTop: 6 },
+  progressText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: COLORS.textMuted },
   modeBadge: {
     backgroundColor: COLORS.primaryLight, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10,
   },
