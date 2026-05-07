@@ -334,6 +334,19 @@ export async function findDuplicateFlashcard(english: string): Promise<Flashcard
   return row as Flashcard | null;
 }
 
+export async function findDuplicateFlashcardInCollection(english: string, collectionId: number): Promise<Flashcard | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<any>(
+    `SELECT *, collection_id as collection_id
+     FROM flashcards
+     WHERE collection_id = ?
+       AND LOWER(TRIM(english)) = LOWER(TRIM(?))
+     LIMIT 1`,
+    [collectionId, english]
+  );
+  return row as Flashcard | null;
+}
+
 // --- API Key Operations ---
 
 export async function getApiKeys(): Promise<ApiKey[]> {

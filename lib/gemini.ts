@@ -114,11 +114,11 @@ function isSingleWordOrPhrase(text: string): boolean {
 
 const COLLECTION_SUGGESTION_RULES = `
 Rules for "suggested_collection":
-1. Try your best to categorize the word into a specific thematic category (e.g., "Technology", "Work", "Emotions").
-2. First, check "Existing collections" below. If the word fits ANY of them, use that exact name.
-3. If no existing collection fits well, you may suggest a new specific category name.
-4. If the word is very general and does not fit any specific theme, use "Inbox".
-5. Keep category names concise (1-2 words). Avoid generic names like "Vocabulary" or "General".`;
+1. Categorize the word into a specific thematic category (e.g., "Technology", "Medical", "Emotions").
+2. For very common or general words (like "have", "go", "see"), use systematic categories such as "Core Verbs", "Basic Vocabulary", or "Common Phrases".
+3. Check "Existing collections" below. If the word fits one of them LOGICALLY (e.g., "flight" fits "Travel"), use it. 
+4. CRITICAL: If an existing collection name is non-descriptive (like "T", "A", "New") or doesn't fit, IGNORE it and suggest a NEW specific thematic name.
+5. Avoid "Inbox" or "General". Keep names concise (1-3 words).`;
 
 const SINGLE_WORD_PROMPT = (input: string, existingCollections?: string[]) => `
 You are a vocabulary flashcard creator.
@@ -232,9 +232,10 @@ export async function extractFromImage(base64: string, mimeType: string, existin
   const prompt = `This is a photo of a vocabulary list (printed table or handwriting). 
 Task:
 1. Identify all English words/phrases in the image.
-2. For each word: provide Vietnamese translation (prefer translation if visible in image), fix spelling, find IPA phonetics, provide grammar notes, and create usage examples.
+2. For each word: provide Vietnamese translation, fix spelling, find IPA phonetics, provide grammar notes, and create usage examples.
 3. Determine word_type: ${WORD_TYPE_VALUES}.
-4. Suggest ONE suitable collection for EACH word.
+4. ${COLLECTION_SUGGESTION_RULES}
+
 ${existingCollections?.length ? `Existing collections: ${existingCollections.map(d => `"${d}"`).join(', ')}.` : ''}
  
 Output as a JSON object (NO extra explanation):
@@ -248,7 +249,7 @@ Output as a JSON object (NO extra explanation):
       "example_en": "English example",
       "example_vi": "Vietnamese translation of example",
       "word_type": "noun",
-      "suggested_collection": "best matching category"
+      "suggested_collection": "Specific Topic"
     }
   ]
 }`;
@@ -266,7 +267,11 @@ export async function reanalyzeCard(english: string, context?: string): Promise<
     Output ONLY JSON: {"flashcards": [{"english": "...", "phonetic": "...", "vietnamese": "...", "grammar_note": "...", "example_en": "...", "example_vi": "...", "word_type": "..."}]}`;
   const raw = await generateContent(prompt);
   const res = JSON.parse(cleanJsonResponse(raw));
-  return res.flashcards[0];
+  const card = res.flashcards[0] ?? {};
+  if (typeof card.english === 'string' && card.english.trim()) {
+    card.english = card.english.trim().charAt(0).toUpperCase() + card.english.trim().slice(1);
+  }
+  return card;
 }
 
 /**

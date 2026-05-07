@@ -11,7 +11,7 @@ import {
   Volume2,
   X
 } from 'lucide-react-native';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -33,7 +33,7 @@ import { useFlashcardStore } from '../../store/useFlashcardStore';
 export default function TutorScreen() {
   const { collectionId: paramCollectionId, collectionName } = useLocalSearchParams<{ collectionId?: string; collectionName?: string }>();
   const { 
-    collections, addFlashcardsBulk, findDuplicate, addCollection, inboxCollectionId, refresh 
+    collections, flashcards, addFlashcardsBulk, addCollection, inboxCollectionId, refresh 
   } = useFlashcardStore();
 
   const [input, setInput] = useState('');
@@ -55,24 +55,27 @@ export default function TutorScreen() {
     if (data && data.flashcards) {
       const initialMap: Record<number, { collectionId?: number; newCollectionName?: string }> = {};
       data.flashcards.forEach((card: any, idx: number) => {
+        const initialCollectionId = paramCollectionId ? Number(paramCollectionId) : null;
+        
         if (card.suggested_collection) {
-          const initialCollectionId = paramCollectionId ? Number(paramCollectionId) : null;
-          const existing = collections.find(d => d.name.toLowerCase() === card.suggested_collection.toLowerCase());
+          const suggestedLower = card.suggested_collection.toLowerCase();
+          const existing = collections.find(d => d.name.toLowerCase() === suggestedLower);
           
           if (existing) {
             // Priority 1: AI suggested an existing collection
             initialMap[idx] = { collectionId: existing.id };
-          } else if (initialCollectionId) {
-            // Priority 2: Use the collection we came from if AI suggested something new
-            initialMap[idx] = { collectionId: initialCollectionId };
-          } else if (card.suggested_collection.toLowerCase() === 'inbox') {
-            initialMap[idx] = { collectionId: inboxCollectionId || undefined };
-          } else {
-            // Priority 3: AI suggested a brand new collection name
+          } else if (suggestedLower !== 'inbox' && suggestedLower !== 'general') {
+            // Priority 2: AI suggested a meaningful NEW collection name
             initialMap[idx] = { newCollectionName: card.suggested_collection };
+          } else if (initialCollectionId) {
+            // Priority 3: Fallback to current collection
+            initialMap[idx] = { collectionId: initialCollectionId };
+          } else {
+            // Priority 4: Final fallback to global Inbox
+            initialMap[idx] = { collectionId: inboxCollectionId || undefined };
           }
         } else {
-          initialMap[idx] = { collectionId: paramCollectionId ? Number(paramCollectionId) : (inboxCollectionId || undefined) };
+          initialMap[idx] = { collectionId: initialCollectionId || (inboxCollectionId || undefined) };
         }
       });
       setCardCollections(initialMap);
@@ -183,8 +186,9 @@ export default function TutorScreen() {
         });
       }
 
-      await addFlashcardsBulk(operations);
-      Alert.alert("Success", `Added ${operations.length} cards to your library.`);
+      const res = await addFlashcardsBulk(operations);
+      const summary = `Added: ${res.added}\nUpdated: ${res.updated}${res.skipped ? `\nSkipped: ${res.skipped}` : ''}`;
+      Alert.alert("Saved", summary);
       setResult(null);
       setInput('');
     } catch (error: any) {
@@ -208,6 +212,38 @@ export default function TutorScreen() {
   };
 
   const filteredCollections = collections.filter(d => d.name.toLowerCase().includes(collectionSearch.toLowerCase()));
+
+  const normalized = (s: string) => (s ?? '').trim().toLowerCase();
+
+  // Fast lookup: normalized english -> first existing card
+  const existingByEnglish = useMemo(() => {
+    const map = new Map<string, { id: number; collection_id: number; english: string }>();
+    for (const c of flashcards) {
+      const key = normalized(c.english);
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, { id: c.id, collection_id: c.collection_id, english: c.english });
+    }
+    return map;
+  }, [flashcards]);
+
+  const getTargetCollectionIdForIndex = (idx: number): number | null => {
+    const target = cardCollections[idx];
+    if (target?.collectionId) return target.collectionId;
+    // If it's a new collection name, we don't know its id yet => can't decide same-collection update in advance
+    return null;
+  };
+
+  const getDuplicateWarning = (english: string, targetCollectionId: number | null) => {
+    const key = normalized(english);
+    const dup = key ? existingByEnglish.get(key) : undefined;
+    if (!dup) return null;
+
+    const dupCollectionName = collections.find(d => d.id === dup.collection_id)?.name ?? 'Unknown';
+    if (targetCollectionId && dup.collection_id === targetCollectionId) {
+      return { kind: 'same' as const, text: `Already in this collection → will update existing card.`, detail: dupCollectionName };
+    }
+    return { kind: 'other' as const, text: `Already exists in "${dupCollectionName}" → will add another copy here.`, detail: dupCollectionName };
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -294,6 +330,17 @@ export default function TutorScreen() {
                     </View>
                     <Text style={styles.cardPhonetic}>{card.phonetic}</Text>
                     <Text style={styles.cardVi}>{card.vietnamese}</Text>
+
+                    {(() => {
+                      const targetId = getTargetCollectionIdForIndex(idx);
+                      const warn = getDuplicateWarning(card.english, targetId);
+                      if (!warn) return null;
+                      return (
+                        <Text style={[styles.cardNote, { color: warn.kind === 'same' ? COLORS.warning : COLORS.danger, fontStyle: 'normal' }]}>
+                          {warn.kind === 'same' ? 'Update' : 'Duplicate'}: {warn.text}
+                        </Text>
+                      );
+                    })()}
                     
                     {card.grammar_note && (
                       <Text style={styles.cardNote}>{card.grammar_note}</Text>

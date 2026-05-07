@@ -218,9 +218,13 @@ export default function SettingsScreen() {
       // 3. Final Import
       const finalImport = [...groupA, ...processedGroupC];
       if (finalImport.length > 0) {
-        await addFlashcardsBulk(finalImport);
+        const res = await addFlashcardsBulk(finalImport);
         await refresh();
-        Alert.alert("AI Import Complete", `Successfully imported ${finalImport.length} cards (${groupA.length} original, ${processedGroupC.length} AI enhanced).`);
+        const summary = `Added: ${res.added}\nUpdated: ${res.updated}${res.skipped ? `\nSkipped: ${res.skipped}` : ''}`;
+        Alert.alert(
+          "AI Import Complete",
+          `Requested: ${finalImport.length} cards (${groupA.length} original, ${processedGroupC.length} AI enhanced).\n\n${summary}`
+        );
       } else {
         Alert.alert("Notice", "No valid cards found for import.");
       }
