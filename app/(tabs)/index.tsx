@@ -9,6 +9,7 @@ import {
   Edit2,
   FolderInput,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Trash2,
@@ -32,7 +33,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WordDetailModal } from '../../components/flashcard/WordDetailModal';
-import { COLORS, LAYOUT } from '../../constants/theme';
+import { COLORS, ICON_OPTIONS, LAYOUT } from '../../constants/theme';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
 import { Collection, Flashcard } from '../../types';
 
@@ -45,13 +46,13 @@ const SORT_LABELS: Record<SortOption, string> = {
   oldest: 'Oldest',
 };
 const SORT_OPTIONS: SortOption[] = ['name_asc', 'name_desc', 'newest', 'oldest'];
-const ICON_OPTIONS = ['📚', '💼', '🌿', '🎯', '✈️', '🏠', '🎓', '💬', '🔬', '🎵', '📝', '🌍'];
+// Local constants removed, using shared constants
 
 export default function LibraryScreen() {
   const router = useRouter();
   const {
     collections, flashcards, inboxCollectionId,
-    newCramCount, newCramTotalCount, focusReviewCount, focusTotalCount,
+    newCramCount, newCramTotalCount, focusReviewCount: reviewCount, focusTotalCount: reviewTotalCount,
     addCollection, editCollection, removeCollection, removeMultipleCollections,
     refresh, searchFlashcards, setActiveCollectionId, moveMultipleFlashcards,
     moveFlashcard, removeFlashcard, updateFlashcard
@@ -59,7 +60,7 @@ export default function LibraryScreen() {
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<(Flashcard & { collection_name: string })[]>([]);
+  const [searchResults, setSearchResults] = useState<(Flashcard & { collection_name: string; collection_icon: string })[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
   // Sort
@@ -155,7 +156,7 @@ export default function LibraryScreen() {
     setSaving(true);
     try {
       if (editTarget) {
-        await editCollection(editTarget.id, collectionName.trim());
+        await editCollection(editTarget.id, collectionName.trim(), collectionIcon);
       } else {
         await addCollection(collectionName.trim(), collectionIcon);
       }
@@ -363,7 +364,7 @@ export default function LibraryScreen() {
     </TouchableOpacity>
   ));
 
-  const renderItem = useCallback(({ item }: { item: Collection | (Flashcard & { collection_name: string }) }) => {
+  const renderItem = useCallback(({ item }: { item: Collection | (Flashcard & { collection_name: string; collection_icon: string }) }) => {
     // Check if it's a Flashcard (search result) or a Collection
     if ('english' in item) {
       const card = item;
@@ -380,7 +381,7 @@ export default function LibraryScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.searchCardEn}>{card.english}</Text>
             <Text style={styles.searchCardVi}>{card.vietnamese}</Text>
-            <Text style={styles.searchCardCollection}>{card.collection_name}</Text>
+            <Text style={styles.searchCardCollection}>{card.collection_icon || '📚'} {card.collection_name}</Text>
           </View>
           <TouchableOpacity
             onPress={() => {
@@ -415,128 +416,6 @@ export default function LibraryScreen() {
     );
   }, [isMultiSelectMode, selectedIds, collectionCountsMap, handleCollectionPress, handleOpenEdit, handleDeleteCollection]);
 
-  const ListHeader = () => (
-    <View style={{ paddingHorizontal: 16 }}>
-      <View style={styles.searchContainer}>
-        <Search size={18} color={COLORS.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search all cards..."
-          placeholderTextColor={COLORS.textMuted}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-        {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchQuery('')}>
-            <X size={18} color={COLORS.textMuted} />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {searchQuery.length > 0 ? (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Results</Text>
-            {isSearching && <ActivityIndicator size="small" color={COLORS.primary} />}
-          </View>
-
-          {filteredAndSortedCollections.length > 0 && (
-            <View style={{ marginBottom: 16 }}>
-              <Text style={styles.subLabel}>MATCHING COLLECTIONS</Text>
-              {filteredAndSortedCollections.map(collection => (
-                <TouchableOpacity
-                  key={collection.id}
-                  onPress={() => {
-                    setActiveCollectionId(collection.id);
-                    router.push('/review');
-                  }}
-                  style={styles.searchCollectionRow}
-                >
-                  <BookOpen size={18} color={COLORS.primary} />
-                  <Text style={styles.searchCollectionName}>{collection.name}</Text>
-                  <ChevronRight size={16} color={COLORS.primary} />
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-
-          {searchResults.length > 0 && (
-            <Text style={styles.subLabel}>MATCHING WORDS</Text>
-          )}
-        </View>
-      ) : (
-        <>
-          {inboxCollection && (
-            <TouchableOpacity
-              style={styles.inboxRow}
-              onPress={() => {
-                setActiveCollectionId(inboxCollection.id);
-                router.push('/review');
-              }}
-              activeOpacity={0.85}
-            >
-              <View style={styles.inboxIconBox}>
-                <Text style={styles.collectionEmoji}>{inboxCollection.icon || '📥'}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inboxTitle}>Uncategorized (Inbox)</Text>
-                <Text style={styles.inboxSubtitle}>{inboxCount} {inboxCount === 1 ? 'card' : 'cards'} waiting</Text>
-              </View>
-            </TouchableOpacity>
-          )}
-
-          <View style={styles.row}>
-            <TouchableOpacity
-              style={[styles.actionCard, { backgroundColor: COLORS.primary }]}
-              onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'new', mode: 'new' } })}
-              activeOpacity={0.85}
-            >
-              <Brain size={22} color="white" />
-              <View style={styles.actionTextWrap}>
-                <Text style={styles.actionLabel}>Cram New</Text>
-                <Text style={styles.actionValue}>{newCramTotalCount - newCramCount}/{newCramTotalCount} today</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.actionCard, { backgroundColor: '#5851DB' }]}
-              onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'review' } })}
-              activeOpacity={0.85}
-            >
-              <TrendingUp size={22} color="white" />
-              <View style={styles.actionTextWrap}>
-                <Text style={styles.actionLabel}>Focus Review</Text>
-                <Text style={styles.actionValue}>{focusTotalCount - focusReviewCount}/{focusTotalCount} today</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.subLabel}>COLLECTIONS ({filteredAndSortedCollections.length})</Text>
-            <TouchableOpacity onPress={() => setShowSortMenu(v => !v)}>
-              <ArrowUpDown size={16} color={COLORS.textSecondary} />
-            </TouchableOpacity>
-          </View>
-
-          {showSortMenu && (
-            <View style={styles.sortMenu}>
-              {SORT_OPTIONS.map(opt => (
-                <TouchableOpacity
-                  key={opt}
-                  onPress={() => { setSortBy(opt); setShowSortMenu(false); }}
-                  style={[styles.sortChip, sortBy === opt && styles.sortChipActive]}
-                >
-                  <Text style={[styles.sortChipText, sortBy === opt && styles.sortChipTextActive]}>
-                    {SORT_LABELS[opt]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-        </>
-      )}
-    </View>
-  );
 
   const listData = useMemo(() =>
     searchQuery.length > 0 ? searchResults : filteredAndSortedCollections,
@@ -561,7 +440,146 @@ export default function LibraryScreen() {
         data={listData}
         keyExtractor={item => item.id.toString()}
         renderItem={renderItem}
-        ListHeaderComponent={ListHeader}
+        ListHeaderComponent={
+          <View style={{ paddingHorizontal: 16 }}>
+            <View style={styles.searchContainer}>
+              <Search size={18} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search all cards..."
+                placeholderTextColor={COLORS.textMuted}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery('')}>
+                  <X size={18} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {searchQuery.length > 0 ? (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Results</Text>
+                  {isSearching && <ActivityIndicator size="small" color={COLORS.primary} />}
+                </View>
+
+                {filteredAndSortedCollections.length > 0 && (
+                  <View style={{ marginBottom: 16 }}>
+                    <Text style={styles.subLabel}>MATCHING COLLECTIONS</Text>
+                    {filteredAndSortedCollections.map(collection => (
+                      <TouchableOpacity
+                        key={collection.id}
+                        onPress={() => {
+                          setActiveCollectionId(collection.id);
+                          router.push('/review');
+                        }}
+                        style={styles.searchCollectionRow}
+                      >
+                        <Text style={{ fontSize: 18, marginRight: 10 }}>{collection.icon || '📚'}</Text>
+                        <Text style={styles.searchCollectionName}>{collection.name}</Text>
+                        <ChevronRight size={16} color={COLORS.primary} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {searchResults.length > 0 && (
+                  <Text style={styles.subLabel}>MATCHING WORDS</Text>
+                )}
+              </View>
+            ) : (
+              <>
+                {inboxCollection && (
+                  <TouchableOpacity
+                    style={styles.inboxRow}
+                    onPress={() => {
+                      setActiveCollectionId(inboxCollection.id);
+                      router.push('/review');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.inboxIconBox}>
+                      <Text style={styles.collectionEmoji}>{inboxCollection.icon || '📥'}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inboxTitle}>Uncategorized (Inbox)</Text>
+                      <Text style={styles.inboxSubtitle}>{inboxCount} {inboxCount === 1 ? 'card' : 'cards'} waiting</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+
+                <View style={styles.row}>
+                  <TouchableOpacity
+                    style={[styles.actionCard, { backgroundColor: COLORS.primary }]}
+                    onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'new', mode: 'new' } })}
+                    activeOpacity={0.85}
+                  >
+                    <Brain size={22} color="white" />
+                    <View style={styles.actionTextWrap}>
+                      <Text style={styles.actionLabel}>Cram New</Text>
+                      <Text style={styles.actionValue}>{newCramTotalCount - newCramCount}/{newCramTotalCount} today</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.actionCard, { backgroundColor: COLORS.warning }]}
+                    onPress={() => router.push({ pathname: '/session/[id]', params: { id: 'review', mode: 'review' } })}
+                    activeOpacity={0.85}
+                  >
+                    <RotateCcw size={22} color="white" />
+                    <View style={styles.actionTextWrap}>
+                      <Text style={styles.actionLabel}>Review</Text>
+                      <Text style={styles.actionValue}>{reviewTotalCount - reviewCount}/{reviewTotalCount} today</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Collections</Text>
+                    <TouchableOpacity onPress={() => {
+                      setEditTarget(null);
+                      setCollectionName('');
+                      setCollectionIcon('📚');
+                      setAddModalVisible(true);
+                    }}>
+                      <View style={styles.addBtnSmall}>
+                        <Plus size={14} color={COLORS.primary} />
+                        <Text style={styles.addBtnTextSmall}>New</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.subLabel}>COLLECTIONS ({filteredAndSortedCollections.length})</Text>
+                  <TouchableOpacity onPress={() => setShowSortMenu(v => !v)}>
+                    <ArrowUpDown size={16} color={COLORS.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+
+                {showSortMenu && (
+                  <View style={styles.sortMenu}>
+                    {SORT_OPTIONS.map(opt => (
+                      <TouchableOpacity
+                        key={opt}
+                        onPress={() => { setSortBy(opt); setShowSortMenu(false); }}
+                        style={[styles.sortChip, sortBy === opt && styles.sortChipActive]}
+                      >
+                        <Text style={[styles.sortChipText, sortBy === opt && styles.sortChipTextActive]}>
+                          {SORT_LABELS[opt]}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+              </>
+            )}
+          </View>
+        }
         ListFooterComponent={<View style={{ height: 120 }} />}
         contentContainerStyle={{ paddingBottom: 20 }}
         showsVerticalScrollIndicator={false}
@@ -597,47 +615,98 @@ export default function LibraryScreen() {
         </TouchableOpacity>
       )}
 
-      <Modal visible={addModalVisible} transparent animationType="slide" onRequestClose={() => setAddModalVisible(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setAddModalVisible(false)}>
-          <View style={styles.modalSheet}>
-            <View style={styles.handleBar} />
-            <Text style={styles.modalTitle}>{editTarget ? 'Edit Collection' : 'New Collection'}</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="e.g. TOEIC Vocabulary"
-              placeholderTextColor={COLORS.textMuted}
-              value={collectionName}
-              onChangeText={setCollectionName}
-              autoFocus
-              maxLength={40}
-            />
-            {!editTarget && (
-              <>
-                <Text style={styles.inputLabel}>ICON</Text>
-                <View style={styles.iconGrid}>
-                  {ICON_OPTIONS.map(emoji => (
-                    <TouchableOpacity
-                      key={emoji}
-                      style={[styles.iconOption, collectionIcon === emoji && styles.iconOptionSelected]}
-                      onPress={() => setCollectionIcon(emoji)}
-                    >
-                      <Text style={{ fontSize: 24 }}>{emoji}</Text>
-                    </TouchableOpacity>
-                  ))}
+      <Modal
+        visible={addModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setAddModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => {
+              if (!saving) setAddModalVisible(false);
+            }}
+          >
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' }} />
+          </TouchableOpacity>
+
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.keyboardView}
+          >
+            <View style={styles.modalSheet}>
+              <View style={styles.handleBar} />
+              <View style={styles.modalHeaderRow}>
+                <Text style={styles.modalTitle}>{editTarget ? 'Edit Collection' : 'New Collection'}</Text>
+                <TouchableOpacity
+                  onPress={() => setAddModalVisible(false)}
+                  style={styles.closeModalBtn}
+                >
+                  <X size={20} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                style={styles.modalScroll}
+                keyboardShouldPersistTaps="handled"
+              >
+                <View style={styles.inputSection}>
+                  <Text style={styles.inputLabel}>NAME</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="e.g. TOEIC Vocabulary"
+                    placeholderTextColor={COLORS.textMuted}
+                    value={collectionName}
+                    onChangeText={setCollectionName}
+                    autoFocus
+                    maxLength={40}
+                  />
                 </View>
-              </>
-            )}
-            <TouchableOpacity
-              style={[styles.saveBtn, (!collectionName.trim() || saving) && styles.saveBtnDisabled]}
-              onPress={handleSaveCollection}
-              disabled={!collectionName.trim() || saving}
-            >
-              <Text style={styles.saveBtnText}>
-                {saving ? 'Saving...' : editTarget ? 'Save Changes' : 'Create Collection'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
+
+                <View style={styles.iconSection}>
+                  <Text style={styles.inputLabel}>ICON</Text>
+                  <View style={styles.iconGrid}>
+                    {ICON_OPTIONS.map(emoji => (
+                      <TouchableOpacity
+                        key={emoji}
+                        style={[
+                          styles.iconOption,
+                          collectionIcon === emoji && styles.iconOptionSelected
+                        ]}
+                        onPress={() => setCollectionIcon(emoji)}
+                      >
+                        <Text style={{ fontSize: 24 }}>{emoji}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              </ScrollView>
+
+              <View style={styles.modalFooter}>
+                <TouchableOpacity
+                  style={[
+                    styles.saveBtn,
+                    (!collectionName.trim() || saving) && styles.saveBtnDisabled
+                  ]}
+                  onPress={handleSaveCollection}
+                  disabled={!collectionName.trim() || saving}
+                  activeOpacity={0.8}
+                >
+                  {saving ? (
+                    <ActivityIndicator color="white" size="small" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>
+                      {editTarget ? 'Save Changes' : 'Create Collection'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
 
       <Modal visible={isMoveModalVisible} transparent animationType="slide">
@@ -679,7 +748,7 @@ export default function LibraryScreen() {
       <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
         <View style={styles.modalOverlayEdit}>
           <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior='padding'>
             <View style={styles.modalSheetEdit}>
               <View style={styles.modalHeaderEdit}>
                 <Text style={styles.modalTitleEdit}>Edit Card</Text>
@@ -780,19 +849,62 @@ const styles = StyleSheet.create({
   multiDivider: { width: 1, height: '50%', backgroundColor: '#333', alignSelf: 'center' },
 
   fab: { position: 'absolute', right: 16, bottom: 16, width: 52, height: 52, borderRadius: 26, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', ...LAYOUT.shadow, elevation: 4 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 32 },
-  handleBar: { width: 36, height: 4, backgroundColor: COLORS.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
-  modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 24, color: COLORS.textPrimary, marginBottom: 12 },
-  inputLabel: { fontFamily: 'Inter_500Medium', fontSize: 11, letterSpacing: 1.2, color: COLORS.textMuted, marginBottom: 8 },
-  modalSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginBottom: 20 },
-  modalInput: { backgroundColor: COLORS.background, borderRadius: LAYOUT.radiusSmall, paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Inter_400Regular', fontSize: 16, color: COLORS.textPrimary, marginBottom: 24, borderWidth: 1, borderColor: COLORS.border },
-  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 32 },
-  iconOption: { width: 48, height: 48, borderRadius: 12, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  keyboardView: { width: '100%' },
+  modalSheet: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 12, // Reduced to be closer to edge
+    width: '100%',
+    maxHeight: '92%', // Increased slightly
+    ...LAYOUT.shadow,
+    elevation: 20,
+  },
+  handleBar: { width: 40, height: 4, backgroundColor: COLORS.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  modalHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  modalTitle: { fontFamily: 'Outfit_700Bold', fontSize: 24, color: COLORS.textPrimary },
+  modalSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textSecondary, marginTop: 4, marginBottom: 20 },
+  closeModalBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center' },
+  modalScroll: { maxHeight: 500 }, // Increased to show more icons
+  inputSection: { marginBottom: 16 },
+  iconSection: { marginBottom: 8 },
+  inputLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, letterSpacing: 1.2, color: COLORS.textMuted, marginBottom: 8 },
+  modalInput: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
+    color: COLORS.textPrimary,
+    borderWidth: 1,
+    borderColor: COLORS.border
+  },
+  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 4 },
+  iconOption: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent'
+  },
   iconOptionSelected: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight },
-  saveBtn: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 16, alignItems: 'center' },
-  saveBtnDisabled: { opacity: 0.45 },
-  saveBtnText: { fontFamily: 'Outfit_600SemiBold', fontSize: 17, color: 'white' },
+  modalFooter: { paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.border },
+  saveBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...LAYOUT.shadow
+  },
+  saveBtnDisabled: { backgroundColor: COLORS.border, shadowOpacity: 0 },
+  saveBtnText: { fontFamily: 'Outfit_700Bold', fontSize: 16, color: 'white' },
 
   collectionCard: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: 'white',
@@ -824,4 +936,9 @@ const styles = StyleSheet.create({
   textInput: { backgroundColor: COLORS.background, borderRadius: LAYOUT.radiusXSmall, paddingHorizontal: 12, paddingVertical: 10, fontFamily: 'Inter_400Regular', fontSize: 14, color: COLORS.textPrimary, borderWidth: 1, borderColor: COLORS.border, textAlignVertical: 'top' },
   saveBtnEdit: { backgroundColor: COLORS.primary, borderRadius: LAYOUT.radiusSmall, paddingVertical: 12, alignItems: 'center' },
   saveBtnTextEdit: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, color: 'white' },
+  addBtnSmall: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4
+  },
+  addBtnTextSmall: { fontFamily: 'Outfit_600SemiBold', fontSize: 12, color: COLORS.primary },
 });

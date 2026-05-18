@@ -84,6 +84,15 @@ export async function initDb() {
       );
     `);
 
+    // Migration: Add icon column to collections if it doesn't exist
+    try { await db.execAsync("ALTER TABLE collections ADD COLUMN icon TEXT;"); } catch (e) {}
+
+    // Migration: Add AI-related columns to flashcards if they don't exist
+    try { await db.execAsync("ALTER TABLE flashcards ADD COLUMN word_type TEXT DEFAULT '';"); } catch (e) {}
+    try { await db.execAsync("ALTER TABLE flashcards ADD COLUMN grammar_note TEXT;"); } catch (e) {}
+    try { await db.execAsync("ALTER TABLE flashcards ADD COLUMN example_en TEXT;"); } catch (e) {}
+    try { await db.execAsync("ALTER TABLE flashcards ADD COLUMN example_vi TEXT;"); } catch (e) {}
+
     // 2. Robust Seed: Ensure Inbox exists and is tracked
     let inboxId: number | null = null;
     
@@ -150,14 +159,14 @@ export async function createCollection(name: string, icon: string): Promise<numb
   const createdAt = new Date().toISOString();
   const result = await db.runAsync(
     'INSERT INTO collections (name, icon, created_at) VALUES (?, ?, ?)',
-    [name.trim(), icon, createdAt]
+    [name.trim(), icon ?? null, createdAt]
   );
   return result.lastInsertRowId;
 }
 
-export async function updateCollection(id: number, name: string): Promise<void> {
+export async function updateCollection(id: number, name: string, icon: string): Promise<void> {
   const db = await getDb();
-  await db.runAsync('UPDATE collections SET name = ? WHERE id = ?', [name, id]);
+  await db.runAsync('UPDATE collections SET name = ?, icon = ? WHERE id = ?', [name, icon ?? null, id]);
 }
 
 export async function deleteCollection(id: number): Promise<void> {
@@ -210,29 +219,36 @@ export async function getAllFlashcards(): Promise<Flashcard[]> {
   return rows as Flashcard[];
 }
 
-export async function searchFlashcards(query: string): Promise<(Flashcard & { collection_name: string })[]> {
+export async function searchFlashcards(query: string): Promise<(Flashcard & { collection_name: string; collection_icon: string })[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<any>(
-    `SELECT f.*, f.collection_id as collection_id, d.name as collection_name FROM flashcards f
+    `SELECT f.*, f.collection_id as collection_id, d.name as collection_name, d.icon as collection_icon FROM flashcards f
      LEFT JOIN collections d ON f.collection_id = d.id
      WHERE f.english LIKE ?
      LIMIT 50`,
     [`%${query}%`]
   );
-  return rows as (Flashcard & { collection_name: string })[];
+  return rows as (Flashcard & { collection_name: string; collection_icon: string })[];
 }
 
-export async function createFlashcard(card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps' | 'created_at'>): Promise<number> {
+export async function createFlashcard(card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps'>): Promise<number> {
   const db = await getDb();
-  const createdAt = new Date().toISOString();
+  const createdAt = card.created_at || new Date().toISOString();
   const result = await db.runAsync(
     `INSERT INTO flashcards (
       collection_id, english, vietnamese, phonetic, word_type, 
       grammar_note, example_en, example_vi, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      card.collection_id, card.english, card.vietnamese, card.phonetic, card.word_type,
-      card.grammar_note, card.example_en, card.example_vi, createdAt
+      card.collection_id, 
+      card.english, 
+      card.vietnamese, 
+      card.phonetic ?? null, 
+      card.word_type ?? null,
+      card.grammar_note ?? null, 
+      card.example_en ?? null, 
+      card.example_vi ?? null, 
+      createdAt
     ]
   );
   return result.lastInsertRowId;
@@ -325,25 +341,35 @@ export async function moveMultipleFlashcards(ids: number[], targetCollectionId: 
   );
 }
 
-export async function findDuplicateFlashcard(english: string): Promise<Flashcard | null> {
+export async function findDuplicateFlashcard(english: string, wordType?: string): Promise<Flashcard | null> {
   const db = await getDb();
-  const row = await db.getFirstAsync<any>(
-    `SELECT *, collection_id as collection_id FROM flashcards WHERE LOWER(TRIM(english)) = LOWER(TRIM(?)) LIMIT 1`,
-    [english]
-  );
+  let query = `SELECT *, collection_id as collection_id FROM flashcards WHERE LOWER(TRIM(english)) = LOWER(TRIM(?))`;
+  const params: any[] = [english];
+  
+  if (wordType) {
+    query += ` AND LOWER(TRIM(word_type)) = LOWER(TRIM(?))`;
+    params.push(wordType);
+  }
+  
+  query += ` LIMIT 1`;
+  const row = await db.getFirstAsync<any>(query, params);
   return row as Flashcard | null;
 }
 
-export async function findDuplicateFlashcardInCollection(english: string, collectionId: number): Promise<Flashcard | null> {
+export async function findDuplicateFlashcardInCollection(english: string, collectionId: number, wordType?: string): Promise<Flashcard | null> {
   const db = await getDb();
-  const row = await db.getFirstAsync<any>(
-    `SELECT *, collection_id as collection_id
-     FROM flashcards
-     WHERE collection_id = ?
-       AND LOWER(TRIM(english)) = LOWER(TRIM(?))
-     LIMIT 1`,
-    [collectionId, english]
-  );
+  let query = `SELECT *, collection_id as collection_id FROM flashcards 
+               WHERE collection_id = ? 
+               AND LOWER(TRIM(english)) = LOWER(TRIM(?))`;
+  const params: any[] = [collectionId, english];
+  
+  if (wordType) {
+    query += ` AND LOWER(TRIM(word_type)) = LOWER(TRIM(?))`;
+    params.push(wordType);
+  }
+  
+  query += ` LIMIT 1`;
+  const row = await db.getFirstAsync<any>(query, params);
   return row as Flashcard | null;
 }
 

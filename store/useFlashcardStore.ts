@@ -40,13 +40,13 @@ interface FlashcardState {
   refresh: () => Promise<void>;
   loadCollections: () => Promise<void>;
   addCollection: (name: string, icon: string) => Promise<number>;
-  editCollection: (id: number, name: string) => Promise<void>;
+  editCollection: (id: number, name: string, icon: string) => Promise<void>;
   removeCollection: (id: number) => Promise<void>;
   removeMultipleCollections: (ids: number[]) => Promise<void>;
   loadFlashcards: (collectionId?: number) => Promise<void>;
-  searchFlashcards: (query: string) => Promise<(Flashcard & { collection_name: string })[]>;
+  searchFlashcards: (query: string) => Promise<(Flashcard & { collection_name: string; collection_icon: string })[]>;
   addFlashcard: (
-    card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps' | 'created_at'>
+    card: Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps'>
   ) => Promise<{ action: 'added' | 'updated' | 'skipped' }>;
   addFlashcardsBulk: (
     cards: Array<Omit<Flashcard, 'id' | 'daily_reps' | 'last_studied_at' | 'total_reps'>>
@@ -56,7 +56,8 @@ interface FlashcardState {
   removeMultipleFlashcards: (ids: number[]) => Promise<void>;
   moveFlashcard: (id: number, targetCollectionId: number) => Promise<void>;
   moveMultipleFlashcards: (ids: number[], targetCollectionId: number) => Promise<void>;
-  findDuplicate: (english: string) => Promise<Flashcard | null>;
+  findDuplicate: (english: string, wordType?: string) => Promise<Flashcard | null>;
+  findDuplicateInCollection: (english: string, collectionId: number, wordType?: string) => Promise<Flashcard | null>;
   startSession: (collectionId?: number, mode?: 'new' | 'review' | 'all') => void;
   recordRep: (cardId: number, isSuccess: boolean) => Promise<void>;
   nextCard: () => void;
@@ -69,6 +70,9 @@ interface FlashcardState {
   toggleApiKey: (id: number, isActive: boolean) => Promise<void>;
   exportData: () => Promise<any>;
   importData: (collections: any[], cards: any[]) => Promise<void>;
+  isAutoPlayEnabled: boolean;
+  toggleAutoPlay: () => void;
+  undoRep: (cardId: number, wasSuccess: boolean) => Promise<void>;
 }
 
 const computeIntensiveCounts = (cards: Flashcard[]) => {
@@ -140,6 +144,8 @@ export const useFlashcardStore = create<FlashcardState>()(
       isLoading: false,
       isInitialized: false,
       activeCollectionId: null,
+      isAutoPlayEnabled: false,
+      toggleAutoPlay: () => set(state => ({ isAutoPlayEnabled: !state.isAutoPlayEnabled })),
 
       init: async () => {
         if (get().isInitialized) return;
@@ -175,8 +181,8 @@ export const useFlashcardStore = create<FlashcardState>()(
         return id;
       },
 
-      editCollection: async (id, name) => {
-        await db.updateCollection(id, name);
+      editCollection: async (id, name, icon) => {
+        await db.updateCollection(id, name, icon);
         await get().loadCollections();
       },
 
@@ -275,10 +281,10 @@ export const useFlashcardStore = create<FlashcardState>()(
 
           // Prefer updating within the target collection (fixes miscount when multiple collections share the same english).
           const dupInTarget = hasValidTarget
-            ? await db.findDuplicateFlashcardInCollection(english, targetCollectionId)
+            ? await db.findDuplicateFlashcardInCollection(english, targetCollectionId, raw.word_type)
             : null;
 
-          const dup = dupInTarget ?? await db.findDuplicateFlashcard(english);
+          const dup = dupInTarget ?? await db.findDuplicateFlashcard(english, raw.word_type);
 
           if (!dup) {
             await db.createFlashcard({ ...(raw as any), english });
@@ -330,12 +336,23 @@ export const useFlashcardStore = create<FlashcardState>()(
         await get().refresh();
       },
 
-      findDuplicate: async (english) => {
-        return await db.findDuplicateFlashcard(english);
+      findDuplicate: async (english, wordType) => {
+        return await db.findDuplicateFlashcard(english, wordType);
+      },
+      findDuplicateInCollection: async (english, collectionId, wordType) => {
+        return await db.findDuplicateFlashcardInCollection(english, collectionId, wordType);
       },
 
       startSession: (collectionId, mode = 'review') => {
-        const { flashcards } = get();
+        const { flashcards, sessionQueue, sessionMode, activeCollectionId, currentSessionIndex } = get();
+        
+        // If there's an existing session for the same mode and collection, and it's not finished, resume it.
+        if (sessionQueue.length > 0 && sessionMode === mode && activeCollectionId === (collectionId ?? null)) {
+          if (currentSessionIndex < sessionQueue.length) {
+            return;
+          }
+        }
+
         const now = new Date();
         const dayOfWeek = now.getDay();
         const filtered = collectionId ? flashcards.filter(c => c.collection_id === collectionId) : flashcards;
@@ -369,16 +386,27 @@ export const useFlashcardStore = create<FlashcardState>()(
           }).sort(() => Math.random() - 0.5);
           queue = [...due, ...done];
         }
-        set({ sessionQueue: queue, currentSessionIndex: 0, sessionMode: mode });
+        set({ sessionQueue: queue, currentSessionIndex: 0, sessionMode: mode, activeCollectionId: collectionId ?? null });
       },
 
       recordRep: async (cardId, isSuccess) => {
-        const { flashcards, sessionQueue, currentSessionIndex } = get();
+        const { flashcards, sessionQueue, currentSessionIndex, sessionMode } = get();
         const cardIndex = flashcards.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
 
         const card = flashcards[cardIndex];
-        const newDailyReps = isSuccess ? card.daily_reps + 1 : card.daily_reps;
+
+        // Calculate target reps first
+        const age = getAge(card.created_at);
+        const dayOfWeek = new Date().getDay();
+        let targetReps = getTargetReps(age, dayOfWeek);
+        if (sessionMode === 'all') targetReps = 1; // Just 1 rep for 'all' mode
+        
+        // Ensure minimum 1 rep if targetReps is 0 (e.g. studying a card not due today)
+        if (targetReps === 0) targetReps = 1;
+
+        // Success sets reps immediately to target (completing it for today), forgot keeps current reps
+        const newDailyReps = isSuccess ? targetReps : card.daily_reps;
         const newTotalReps = card.total_reps + 1;
 
         // Update DB in background
@@ -389,12 +417,13 @@ export const useFlashcardStore = create<FlashcardState>()(
         const nextFlashcards = [...flashcards];
         nextFlashcards[cardIndex] = updatedCard;
 
-        // Re-inject into session queue ONLY if forgotten
+        const isFinished = newDailyReps >= targetReps;
+
         let nextSessionQueue = sessionQueue;
-        if (!isSuccess) {
+        if (!isSuccess || !isFinished) {
           const sessionCard = sessionQueue[currentSessionIndex];
           if (sessionCard) {
-            nextSessionQueue = [...sessionQueue, sessionCard];
+            nextSessionQueue = [...sessionQueue, updatedCard];
           }
         }
 
@@ -456,6 +485,39 @@ export const useFlashcardStore = create<FlashcardState>()(
         await db.importBackupData(collections, cards);
         await get().refresh();
       },
+
+      undoRep: async (cardId, wasSuccess) => {
+        const { flashcards, sessionQueue } = get();
+        const cardIndex = flashcards.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+
+        const card = flashcards[cardIndex];
+        const newDailyReps = wasSuccess ? Math.max(0, card.daily_reps - 1) : card.daily_reps;
+        const newTotalReps = Math.max(0, card.total_reps - 1);
+
+        // Update DB
+        await db.updateFlashcardRep(cardId, newDailyReps, newTotalReps);
+
+        // Update state
+        const updatedCard = { ...card, daily_reps: newDailyReps, total_reps: newTotalReps };
+        const nextFlashcards = [...flashcards];
+        nextFlashcards[cardIndex] = updatedCard;
+
+        let nextSessionQueue = [...sessionQueue];
+        if (!wasSuccess) {
+          // If it was a failure, we added the card to the end. Remove it.
+          if (nextSessionQueue[nextSessionQueue.length - 1]?.id === cardId) {
+            nextSessionQueue.pop();
+          }
+        }
+
+        const counts = computeIntensiveCounts(nextFlashcards);
+        set({
+          flashcards: nextFlashcards,
+          sessionQueue: nextSessionQueue,
+          ...counts
+        });
+      },
     }),
     {
       name: 'linguistai-storage',
@@ -468,6 +530,7 @@ export const useFlashcardStore = create<FlashcardState>()(
         currentSessionIndex: state.currentSessionIndex,
         sessionMode: state.sessionMode,
         inboxCollectionId: state.inboxCollectionId,
+        isAutoPlayEnabled: state.isAutoPlayEnabled,
         // Large arrays are moved to manual persistence or excluded to prevent lag
         examQueue: state.examQueue, 
         sessionQueue: state.sessionQueue,

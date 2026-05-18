@@ -30,7 +30,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WordDetailModal } from '../../components/flashcard/WordDetailModal';
-import { COLORS, LAYOUT } from '../../constants/theme';
+import { COLORS, ICON_OPTIONS, LAYOUT } from '../../constants/theme';
 import { getAge, getTargetReps } from '../../lib/algorithm';
 import { reanalyzeCard } from '../../lib/gemini';
 import { useFlashcardStore } from '../../store/useFlashcardStore';
@@ -75,6 +75,7 @@ export default function CollectionDetailScreen() {
   // Edit collection modal
   const [isCollectionEditModalVisible, setIsCollectionEditModalVisible] = useState(false);
   const [collectionNameEdit, setCollectionNameEdit] = useState('');
+  const [collectionIconEdit, setCollectionIconEdit] = useState('📚');
 
   useFocusEffect(useCallback(() => { 
     refresh(); 
@@ -184,9 +185,54 @@ export default function CollectionDetailScreen() {
 
   const handleMoveToCollection = async (targetCollectionId: number) => {
     if (movingForMulti) {
+      const selectedCards = cards.filter(c => selectedCardIds.has(c.id));
+      const duplicates: string[] = [];
+      
+      for (const card of selectedCards) {
+        const dup = await useFlashcardStore.getState().findDuplicateInCollection(card.english, targetCollectionId, card.word_type);
+        if (dup) duplicates.push(card.english);
+      }
+
+      if (duplicates.length > 0) {
+        Alert.alert(
+          'Duplicate Warning',
+          `${duplicates.length} words already exist in the target collection with the same word type:\n\n${duplicates.slice(0, 5).join(', ')}${duplicates.length > 5 ? '...' : ''}\n\nDo you still want to move them?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Move Anyway', 
+              onPress: async () => {
+                await moveMultipleFlashcards(Array.from(selectedCardIds), targetCollectionId);
+                handleCancelMulti();
+                setIsMoveModalVisible(false);
+              } 
+            }
+          ]
+        );
+        return;
+      }
+
       await moveMultipleFlashcards(Array.from(selectedCardIds), targetCollectionId);
       handleCancelMulti();
     } else if (selectedCard) {
+      const dup = await useFlashcardStore.getState().findDuplicateInCollection(selectedCard.english, targetCollectionId, selectedCard.word_type);
+      if (dup) {
+        Alert.alert(
+          'Duplicate Warning',
+          `"${selectedCard.english}" (${selectedCard.word_type}) already exists in the target collection. Move it anyway?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Move Anyway', 
+              onPress: async () => {
+                await moveFlashcard(selectedCard.id, targetCollectionId);
+                setIsMoveModalVisible(false);
+              } 
+            }
+          ]
+        );
+        return;
+      }
       await moveFlashcard(selectedCard.id, targetCollectionId);
     }
     setIsMoveModalVisible(false);
@@ -281,7 +327,7 @@ export default function CollectionDetailScreen() {
 
   const handleEditCollection = async () => {
     if (!collectionNameEdit.trim()) return;
-    await editCollection(collectionId, collectionNameEdit.trim());
+    await editCollection(collectionId, collectionNameEdit.trim(), collectionIconEdit);
     setIsCollectionEditModalVisible(false);
   };
 
@@ -314,7 +360,11 @@ export default function CollectionDetailScreen() {
             <>
               <TouchableOpacity
                 style={styles.iconBtn}
-                onPress={() => { setCollectionNameEdit(collection.name); setIsCollectionEditModalVisible(true); }}
+                onPress={() => { 
+                  setCollectionNameEdit(collection.name); 
+                  setCollectionIconEdit(collection.icon || '📚');
+                  setIsCollectionEditModalVisible(true); 
+                }}
               >
                 <Edit2 size={18} color={COLORS.textSecondary} />
               </TouchableOpacity>
@@ -478,7 +528,7 @@ export default function CollectionDetailScreen() {
       <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior='padding'>
             <View style={styles.modalSheet}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Edit Card</Text>
@@ -552,6 +602,18 @@ export default function CollectionDetailScreen() {
               onChangeText={setCollectionNameEdit}
               autoFocus
             />
+            <Text style={styles.inputLabel}>ICON</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 24, marginTop: 8 }}>
+              {ICON_OPTIONS.map(emoji => (
+                <TouchableOpacity
+                  key={emoji}
+                  style={[{ width: 44, height: 44, borderRadius: 10, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' }, collectionIconEdit === emoji && { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight }]}
+                  onPress={() => setCollectionIconEdit(emoji)}
+                >
+                  <Text style={{ fontSize: 20 }}>{emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <View style={{ flexDirection: 'row', gap: 12 }}>
               <TouchableOpacity style={[styles.saveBtn, { flex: 1, backgroundColor: COLORS.border }]} onPress={() => setIsCollectionEditModalVisible(false)}>
                 <Text style={[styles.saveBtnText, { color: COLORS.textPrimary }]}>Cancel</Text>

@@ -463,7 +463,7 @@ export default function ReviewScreen() {
       <Modal visible={isEditModalVisible} transparent animationType="slide" onRequestClose={() => setIsEditModalVisible(false)}>
         <View style={styles.modalOverlayEdit}>
           <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} onPress={() => setIsEditModalVisible(false)} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior='padding'>
             <View style={styles.modalSheetEdit}>
               <View style={styles.modalHeaderEdit}>
                 <Text style={styles.modalTitleEdit}>Edit Card</Text>

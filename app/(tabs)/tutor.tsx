@@ -2,6 +2,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams } from 'expo-router';
 import * as Speech from 'expo-speech';
 import {
+  Calendar,
   Camera,
   Check,
   ChevronDown,
@@ -12,6 +13,7 @@ import {
   X
 } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   ActivityIndicator,
   Alert,
@@ -42,6 +44,8 @@ export default function TutorScreen() {
   const [result, setResult] = useState<any>(null);
   const [uncheckedIndices, setUncheckedIndices] = useState<Set<number>>(new Set());
   const [cardCollections, setCardCollections] = useState<Record<number, { collectionId?: number; newCollectionName?: string }>>({});
+  const [selectedPlanDate, setSelectedPlanDate] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
   
   // Collection selector
   const [isCollectionModalVisible, setIsCollectionModalVisible] = useState(false);
@@ -144,13 +148,60 @@ export default function TutorScreen() {
 
     setLoading(true);
     try {
-      const operations: any[] = [];
-      
-      const newlyCreatedCollections: Record<string, number> = {};
+      const duplicates: string[] = [];
+      const preparedCards: any[] = [];
       
       for (const idx of validIndices) {
         const card = result.flashcards[idx];
         const target = cardCollections[idx];
+        let finalCollectionId = inboxCollectionId;
+
+        if (target?.collectionId) {
+          finalCollectionId = target.collectionId;
+        } else if (target?.newCollectionName) {
+          const lowerName = target.newCollectionName.toLowerCase();
+          const currentCollections = useFlashcardStore.getState().collections;
+          let existing = currentCollections.find(d => d.name.toLowerCase() === lowerName);
+          if (existing) {
+            finalCollectionId = existing.id;
+          } else {
+            // New collection name - will create later
+            finalCollectionId = -1; // Placeholder for new collection
+          }
+        }
+
+        // Check for duplicate in target collection if collection is known
+        if (finalCollectionId && finalCollectionId !== -1) {
+          const dup = await useFlashcardStore.getState().findDuplicateInCollection(card.english, finalCollectionId, card.word_type);
+          if (dup) {
+            duplicates.push(card.english);
+          }
+        }
+
+        preparedCards.push({ idx, card, target, finalCollectionId });
+      }
+
+      if (duplicates.length > 0) {
+        const proceed = await new Promise((resolve) => {
+          Alert.alert(
+            'Duplicate Warning',
+            `${duplicates.length} words already exist in their target collections with the same word type:\n\n${duplicates.slice(0, 5).join(', ')}${duplicates.length > 5 ? '...' : ''}\n\nDo you want to proceed and update/add them?`,
+            [
+              { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
+              { text: 'Proceed', onPress: () => resolve(true) }
+            ]
+          );
+        });
+        if (!proceed) {
+          setLoading(false);
+          return;
+        }
+      }
+
+      const operations: any[] = [];
+      const newlyCreatedCollections: Record<string, number> = {};
+
+      for (const { card, target } of preparedCards) {
         let finalCollectionId = inboxCollectionId;
 
         if (target?.collectionId) {
@@ -183,6 +234,11 @@ export default function TutorScreen() {
           grammar_note: card.grammar_note,
           example_en: card.example_en,
           example_vi: card.example_vi,
+          created_at: selectedPlanDate ? (() => {
+            const d = new Date(selectedPlanDate);
+            d.setHours(0, 0, 0, 0);
+            return d.toISOString();
+          })() : undefined,
         });
       }
 
@@ -217,11 +273,11 @@ export default function TutorScreen() {
 
   // Fast lookup: normalized english -> first existing card
   const existingByEnglish = useMemo(() => {
-    const map = new Map<string, { id: number; collection_id: number; english: string }>();
+    const map = new Map<string, { id: number; collection_id: number; english: string; word_type: string }>();
     for (const c of flashcards) {
-      const key = normalized(c.english);
-      if (!key) continue;
-      if (!map.has(key)) map.set(key, { id: c.id, collection_id: c.collection_id, english: c.english });
+      const key = `${normalized(c.english)}|${normalized(c.word_type)}`;
+      if (!normalized(c.english)) continue;
+      if (!map.has(key)) map.set(key, { id: c.id, collection_id: c.collection_id, english: c.english, word_type: c.word_type });
     }
     return map;
   }, [flashcards]);
@@ -229,12 +285,11 @@ export default function TutorScreen() {
   const getTargetCollectionIdForIndex = (idx: number): number | null => {
     const target = cardCollections[idx];
     if (target?.collectionId) return target.collectionId;
-    // If it's a new collection name, we don't know its id yet => can't decide same-collection update in advance
     return null;
   };
 
-  const getDuplicateWarning = (english: string, targetCollectionId: number | null) => {
-    const key = normalized(english);
+  const getDuplicateWarning = (english: string, wordType: string, targetCollectionId: number | null) => {
+    const key = `${normalized(english)}|${normalized(wordType)}`;
     const dup = key ? existingByEnglish.get(key) : undefined;
     if (!dup) return null;
 
@@ -247,10 +302,7 @@ export default function TutorScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+      <KeyboardAvoidingView behavior='padding'>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.header}>
             <Text style={styles.title}>AI Tutor</Text>
@@ -268,14 +320,14 @@ export default function TutorScreen() {
               onChangeText={setInput}
             />
             <View style={styles.inputActions}>
-              <View style={styles.mediaBtns}>
-                <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(true)}>
-                  <Camera size={20} color={COLORS.textSecondary} />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(false)}>
-                  <ImageIcon size={20} color={COLORS.textSecondary} />
-                </TouchableOpacity>
-              </View>
+                <View style={styles.mediaBtns}>
+                  <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(true)}>
+                    <Camera size={18} color={COLORS.textSecondary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.mediaBtn} onPress={() => handlePickImage(false)}>
+                    <ImageIcon size={18} color={COLORS.textSecondary} />
+                  </TouchableOpacity>
+                </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                 <TouchableOpacity onPress={() => { setInput(''); setResult(null); }}>
                   <X size={20} color={COLORS.textSecondary} />
@@ -319,7 +371,7 @@ export default function TutorScreen() {
                   <View style={{ flex: 1 }}>
                     <View style={styles.cardHeader}>
                       <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                        <Text style={styles.cardEn}>{card.english}</Text>
+                        <Text style={styles.cardEn}>{card.english.trim().charAt(0).toUpperCase()}{card.english.trim().slice(1)}</Text>
                         {card.word_type && (
                           <Badge label={card.word_type} variant="muted" style={{ marginLeft: 8 }} />
                         )}
@@ -333,7 +385,7 @@ export default function TutorScreen() {
 
                     {(() => {
                       const targetId = getTargetCollectionIdForIndex(idx);
-                      const warn = getDuplicateWarning(card.english, targetId);
+                      const warn = getDuplicateWarning(card.english, card.word_type, targetId);
                       if (!warn) return null;
                       return (
                         <Text style={[styles.cardNote, { color: warn.kind === 'same' ? COLORS.warning : COLORS.danger, fontStyle: 'normal' }]}>
@@ -393,6 +445,33 @@ export default function TutorScreen() {
                   <ChevronDown size={18} color={COLORS.textSecondary} />
                 </TouchableOpacity>
 
+                <Text style={styles.masterLabel}>PLAN START DATE</Text>
+                <TouchableOpacity 
+                  onPress={() => setShowDatePicker(true)}
+                  style={styles.masterSelector}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Calendar size={18} color={COLORS.primary} />
+                    <Text style={styles.masterValue}>
+                      {selectedPlanDate.toDateString() === new Date().toDateString() ? 'Today' : selectedPlanDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </Text>
+                  </View>
+                  <ChevronDown size={18} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={selectedPlanDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={(event, date) => {
+                      setShowDatePicker(false);
+                      if (date) setSelectedPlanDate(date);
+                    }}
+                    minimumDate={new Date()}
+                  />
+                )}
+
                 <Button 
                   title={`Save ${result.flashcards?.length - uncheckedIndices.size} Cards`}
                   onPress={handleSaveBulk}
@@ -411,47 +490,49 @@ export default function TutorScreen() {
       <Modal visible={isCollectionModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <TouchableOpacity style={{ flex: 1 }} onPress={() => setIsCollectionModalVisible(false)} />
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Collection</Text>
-              <TouchableOpacity onPress={() => setIsCollectionModalVisible(false)}>
-                <X size={24} color={COLORS.textPrimary} />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.modalSearch}>
-              <Search size={18} color={COLORS.textMuted} />
-              <TextInput 
-                style={styles.modalSearchInput} 
-                placeholder="Search..." 
-                value={collectionSearch}
-                onChangeText={setCollectionSearch}
-              />
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {filteredCollections.map(collection => (
-                <TouchableOpacity 
-                  key={collection.id}
-                  onPress={() => {
-                    if (editingIndex === 'master') {
-                      const newMap = { ...cardCollections };
-                      Object.keys(newMap).forEach(k => {
-                        newMap[parseInt(k)] = { collectionId: collection.id };
-                      });
-                      setCardCollections(newMap);
-                    } else if (editingIndex !== null) {
-                      setCardCollections(prev => ({ ...prev, [editingIndex]: { collectionId: collection.id } }));
-                    }
-                    setIsCollectionModalVisible(false);
-                    setCollectionSearch('');
-                  }}
-                  style={styles.collectionOption}
-                >
-                  <Text style={styles.collectionOptionText}>{collection.name}</Text>
-                  {collection.id === inboxCollectionId && <Badge label="INBOX" variant="muted" />}
+          <KeyboardAvoidingView behavior='padding'>
+            <View style={styles.modalSheet}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Collection</Text>
+                <TouchableOpacity onPress={() => setIsCollectionModalVisible(false)}>
+                  <X size={24} color={COLORS.textPrimary} />
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+              </View>
+              <View style={styles.modalSearch}>
+                <Search size={18} color={COLORS.textMuted} />
+                <TextInput 
+                  style={styles.modalSearchInput} 
+                  placeholder="Search..." 
+                  value={collectionSearch}
+                  onChangeText={setCollectionSearch}
+                />
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {filteredCollections.map(collection => (
+                  <TouchableOpacity 
+                    key={collection.id}
+                    onPress={() => {
+                      if (editingIndex === 'master') {
+                        const newMap = { ...cardCollections };
+                        Object.keys(newMap).forEach(k => {
+                          newMap[parseInt(k)] = { collectionId: collection.id };
+                        });
+                        setCardCollections(newMap);
+                      } else if (editingIndex !== null) {
+                        setCardCollections(prev => ({ ...prev, [editingIndex]: { collectionId: collection.id } }));
+                      }
+                      setIsCollectionModalVisible(false);
+                      setCollectionSearch('');
+                    }}
+                    style={styles.collectionOption}
+                  >
+                    <Text style={styles.collectionOptionText}>{collection.name}</Text>
+                    {collection.id === inboxCollectionId && <Badge label="INBOX" variant="muted" />}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -478,6 +559,14 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginTop: 10,
   },
   mediaBtns: { flexDirection: 'row', gap: 6 },
+  tomorrowToggle: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, gap: 6,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  tomorrowToggleActive: { backgroundColor: COLORS.success, borderColor: COLORS.success },
+  tomorrowText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: COLORS.textSecondary },
+  tomorrowTextActive: { color: 'white' },
   mediaBtn: {
     width: 36, height: 36, borderRadius: 18, backgroundColor: COLORS.background,
     alignItems: 'center', justifyContent: 'center',

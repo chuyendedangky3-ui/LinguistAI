@@ -390,10 +390,7 @@ export default function SettingsScreen() {
             <View style={StyleSheet.absoluteFill} />
           </TouchableWithoutFeedback>
 
-          <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={{ width: '100%', alignItems: 'center' }}
-          >
+          <KeyboardAvoidingView behavior='padding'>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Add API Key</Text>
