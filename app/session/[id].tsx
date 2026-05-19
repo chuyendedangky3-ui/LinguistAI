@@ -11,7 +11,8 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
+  ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, LAYOUT } from '../../constants/theme';
@@ -23,7 +24,7 @@ export default function SessionScreen() {
   const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
   const router = useRouter();
   const {
-    sessionQueue, currentSessionIndex, sessionMode, startSession, recordRep, nextCard, collections,
+    sessionQueue, currentSessionIndex, sessionMode, activeCollectionId, startSession, recordRep, nextCard, collections,
     isAutoPlayEnabled, toggleAutoPlay, undoRep
   } = useFlashcardStore();
 
@@ -87,6 +88,20 @@ export default function SessionScreen() {
 
   const frontInterpolate = flipAnim.interpolate({ inputRange: [0, 180], outputRange: ['0deg', '180deg'] });
   const backInterpolate = flipAnim.interpolate({ inputRange: [0, 180], outputRange: ['180deg', '360deg'] });
+
+  const expectedCollectionId = (id !== 'new' && id !== 'review') ? Number(id) : null;
+  const expectedMode = (mode as any) || 'review';
+  const isSessionReady = sessionMode === expectedMode && activeCollectionId === expectedCollectionId;
+
+  if (!isSessionReady) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (sessionQueue.length === 0 && currentSessionIndex === 0) {
     return (

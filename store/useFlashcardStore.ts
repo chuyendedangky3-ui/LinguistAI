@@ -151,23 +151,49 @@ export const useFlashcardStore = create<FlashcardState>()(
         if (get().isInitialized) return;
         set({ isLoading: true });
         await db.initDb();
+        const resetOccurred = await db.resetDailyRepsIfNeeded();
         const collections = await db.getAllCollections();
         const flashcards = await db.getAllFlashcards();
         const apiKeys = await db.getApiKeys();
         const inboxIdStr = await db.getSetting('inbox_collection_id');
         const inboxCollectionId = inboxIdStr ? Number(inboxIdStr) : null;
         const counts = computeIntensiveCounts(flashcards);
-        set({ collections, flashcards, apiKeys, inboxCollectionId, ...counts, isLoading: false, isInitialized: true });
+
+        const resetState = resetOccurred ? {
+          sessionQueue: [],
+          currentSessionIndex: 0,
+          sessionMode: null,
+          activeCollectionId: null,
+        } : {};
+
+        set({ 
+          collections, 
+          flashcards, 
+          apiKeys, 
+          inboxCollectionId, 
+          ...counts, 
+          ...resetState,
+          isLoading: false, 
+          isInitialized: true 
+        });
       },
 
       setActiveCollectionId: (id) => set({ activeCollectionId: id }),
 
       refresh: async () => {
-        await db.resetDailyRepsIfNeeded();
+        const resetOccurred = await db.resetDailyRepsIfNeeded();
         const collections = await db.getAllCollections();
         const flashcards = await db.getAllFlashcards();
         const counts = computeIntensiveCounts(flashcards);
-        set({ collections, flashcards, ...counts });
+
+        const resetState = resetOccurred ? {
+          sessionQueue: [],
+          currentSessionIndex: 0,
+          sessionMode: null,
+          activeCollectionId: null,
+        } : {};
+
+        set({ collections, flashcards, ...counts, ...resetState });
       },
 
       loadCollections: async () => {
@@ -197,12 +223,20 @@ export const useFlashcardStore = create<FlashcardState>()(
       },
 
       loadFlashcards: async (collectionId) => {
-        await db.resetDailyRepsIfNeeded();
+        const resetOccurred = await db.resetDailyRepsIfNeeded();
         const flashcards = collectionId
           ? await db.getFlashcardsByCollection(collectionId)
           : await db.getAllFlashcards();
         const counts = computeIntensiveCounts(flashcards);
-        set({ flashcards, ...counts });
+
+        const resetState = resetOccurred ? {
+          sessionQueue: [],
+          currentSessionIndex: 0,
+          sessionMode: null,
+          activeCollectionId: null,
+        } : {};
+
+        set({ flashcards, ...counts, ...resetState });
       },
 
       searchFlashcards: async (query) => {
@@ -365,8 +399,16 @@ export const useFlashcardStore = create<FlashcardState>()(
             const target = getTargetReps(age, dayOfWeek);
             return age === 0 && target > 0;
           });
-          const due = todayCards.filter(c => c.daily_reps < 3).sort(() => Math.random() - 0.5);
-          const done = todayCards.filter(c => c.daily_reps >= 3).sort(() => Math.random() - 0.5);
+          const due = todayCards.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return c.daily_reps < target;
+          }).sort(() => Math.random() - 0.5);
+          const done = todayCards.filter(c => {
+            const age = getAge(c.created_at);
+            const target = getTargetReps(age, dayOfWeek);
+            return c.daily_reps >= target;
+          }).sort(() => Math.random() - 0.5);
           queue = [...due, ...done];
         } else {
           const eligible = filtered.filter(c => {
@@ -492,7 +534,7 @@ export const useFlashcardStore = create<FlashcardState>()(
         if (cardIndex === -1) return;
 
         const card = flashcards[cardIndex];
-        const newDailyReps = wasSuccess ? Math.max(0, card.daily_reps - 1) : card.daily_reps;
+        const newDailyReps = wasSuccess ? 0 : card.daily_reps;
         const newTotalReps = Math.max(0, card.total_reps - 1);
 
         // Update DB
